@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 
 # =================================================================
-# TCP调优脚本 - 最终美化版 v6
+# TCP调优脚本 - 最终美化版 v7
 # 作者: BlackSheep & Gemini
 #
-# 此版本修复了UI颜色代码显示的BUG，并优化了状态显示逻辑。
+# 此版本修复了在旧版bash中由 `local -n` 引起的语法兼容性错误。
 # 经过多轮排查，以确保代码的稳定性和准确性。
 # =================================================================
 
@@ -105,14 +105,6 @@ draw_submenu() {
     printf "${CYAN}└────────────────────────────────────────────────────${NC}\n\n"
 }
 
-# 绘制输入提示符，并接收输入
-prompt_input() {
-    local prompt_text=$1
-    local -n input_var=$2
-    printf "${GREEN}${prompt_text} ➤ ${NC}"
-    read input_var
-}
-
 # 绘制一个简单的确认提示
 prompt_continue() {
     printf "\n${YELLOW}按回车键继续...${NC}"
@@ -181,7 +173,8 @@ while true; do
     draw_status
     draw_main_menu
     
-    prompt_input "请输入方案编号" choice_main
+    printf "${GREEN}请输入方案编号 ➤ ${NC}"
+    read choice_main
 
     case "$choice_main" in
         1)
@@ -189,7 +182,8 @@ while true; do
             while true; do
                 draw_header
                 draw_submenu
-                prompt_input "请输入子菜单选项" sub_choice
+                printf "${GREEN}请输入子菜单选项 ➤ ${NC}"
+                read sub_choice
 
                 case "$sub_choice" in
                     1)
@@ -200,7 +194,8 @@ while true; do
                         echo -e "\n${CYAN}您的出口IP是: ${BOLD_WHITE}$local_ip${NC}"
                         
                         while true; do
-                            prompt_input "请输入 iperf3 端口号（默认 5201）" iperf_port
+                            printf "${GREEN}请输入 iperf3 端口号（默认 5201） ➤ ${NC}"
+                            read iperf_port
                             iperf_port=${iperf_port:-5201}
                             if [[ "$iperf_port" =~ ^[0-9]+$ ]] && [ "$iperf_port" -ge 1 ] && [ "$iperf_port" -le 65535 ]; then
                                 break
@@ -216,11 +211,12 @@ while true; do
                         ;;
                     2)
                         while true; do
-                            prompt_input "请输入TCP缓冲区max值 (单位 MiB, 可带两位小数)" tcp_value
+                            printf "${GREEN}请输入TCP缓冲区max值 (单位 MiB, 可带两位小数) ➤ ${NC}"
+                            read tcp_value
                             if [[ "$tcp_value" =~ ^[0-9]*\.?[0-9]+$ ]] && (( $(echo "$tcp_value > 0" | bc -l) )); then
                                 break
                             else
-                                echo -e "${RED}✘ 无效输入，请输入一个大于0的数字（最多两位小数）。${NC}"
+                                echo -e "${RED}✘ 无效输入，请输入一个大于0的数字。${NC}"
                             fi
                         done
                         
@@ -235,7 +231,8 @@ while true; do
                         ;;
                     3)
                         while true; do
-                            prompt_input "请输入TCP缓冲区max值 (单位 BDP/字节)" value
+                            printf "${GREEN}请输入TCP缓冲区max值 (单位 BDP/字节) ➤ ${NC}"
+                            read value
                             if [[ "$value" =~ ^[1-9][0-9]*$ ]]; then
                                 break
                             else
