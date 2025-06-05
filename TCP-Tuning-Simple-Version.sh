@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 
 # =================================================================
-# TCP调优脚本 - 最终版 v8
-# 作者: AiLi1337
+# TCP调优脚本 - 最终美化版 v9
+# 作者: BlackSheep & Gemini
 #
-# 此版本根据用户反馈调整了子菜单的功能和排序。
+# 此版本在子菜单中也增加了状态显示，方便实时查看参数。
 # 经过多轮排查，以确保代码的稳定性和准确性。
 # =================================================================
 
@@ -59,7 +59,7 @@ draw_status() {
 
     printf "${GREEN}┌─ 系统状态 ───────────────────────────────────${NC}\n"
     printf "${GREEN}│${NC}  依赖状态:\n"
-    
+
     # 循环检查并显示每个依赖的状态
     local dependencies=("iperf3" "nohup" "bc")
     for dep in "${dependencies[@]}"; do
@@ -182,7 +182,9 @@ while true; do
             # 进入子菜单循环
             while true; do
                 draw_header
+                draw_status # 在子菜单中也显示状态
                 draw_submenu
+                
                 printf "${GREEN}请输入子菜单选项 ➤ ${NC}"
                 read sub_choice
 
