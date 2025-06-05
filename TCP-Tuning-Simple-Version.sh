@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 
 # =================================================================
-# TCP调优脚本 - 最终美化版
+# TCP调优脚本 - 最终美化版 v2
 # 作者: BlackSheep & Gemini
 #
-# 此脚本集成了彩色UI和模块化功能，旨在提供更友好的用户体验。
+# 此版本统一了所有用户输入提示的UI风格，提供更一致的交互体验。
 # 经过多轮排查，以确保代码的稳定性和准确性。
 # =================================================================
 
@@ -93,9 +93,20 @@ draw_submenu() {
     printf "${CYAN}└────────────────────────────────────────────────────${NC}\n\n"
 }
 
-# 绘制输入提示符
+# 绘制输入提示符，并接收输入
 prompt_input() {
-    printf "${GREEN}$1 ➤ ${NC}"
+    # $1: 提示文本
+    # $2: 用于接收输入的变量名
+    local prompt_text=$1
+    local -n input_var=$2 # 使用-n使其成为一个引用
+    printf "${GREEN}${prompt_text} ➤ ${NC}"
+    read input_var
+}
+
+# 绘制一个简单的确认提示
+prompt_continue() {
+    printf "${YELLOW}按回车键继续...${NC}"
+    read -r
 }
 
 
@@ -131,11 +142,9 @@ reset_tc() {
         echo -e "\n${YELLOW}ℹ /etc/rc.local 文件不存在，无需清理。${NC}"
     fi
 
-    echo ""
-    ip link show
-    echo ""
+    echo ""; ip link show; echo ""
     while true; do
-        read -p "请根据以上列表输入曾被限速的网卡名称： " iface
+        prompt_input "请根据以上列表输入曾被限速的网卡名称" iface
         if ip link show "$iface" &>/dev/null; then
             break
         else
@@ -201,8 +210,7 @@ while true; do
     draw_status
     draw_main_menu
     
-    prompt_input "请输入方案编号"
-    read choice_main
+    prompt_input "请输入方案编号" choice_main
 
     case "$choice_main" in
         1)
@@ -210,8 +218,7 @@ while true; do
             while true; do
                 draw_header
                 draw_submenu
-                prompt_input "请输入子菜单选项"
-                read sub_choice
+                prompt_input "请输入子菜单选项" sub_choice
 
                 case "$sub_choice" in
                     1)
@@ -222,7 +229,7 @@ while true; do
                         echo -e "\n${CYAN}您的出口IP是: ${BOLD_WHITE}$local_ip${NC}"
                         
                         while true; do
-                            read -p "请输入 iperf3 端口号（默认 5201）: " iperf_port
+                            prompt_input "请输入 iperf3 端口号（默认 5201）" iperf_port
                             iperf_port=${iperf_port:-5201}
                             if [[ "$iperf_port" =~ ^[0-9]+$ ]] && [ "$iperf_port" -ge 1 ] && [ "$iperf_port" -le 65535 ]; then
                                 break
@@ -238,7 +245,7 @@ while true; do
                         ;;
                     2)
                         while true; do
-                            read -p "请输入TCP缓冲区max值 (单位 MiB): " tcp_value
+                            prompt_input "请输入TCP缓冲区max值 (单位 MiB)" tcp_value
                             if [[ "$tcp_value" =~ ^[1-9][0-9]*$ ]]; then
                                 break
                             else
@@ -272,7 +279,7 @@ while true; do
                         ;;
                 esac
                 echo ""
-                read -p "按回车键继续..."
+                prompt_continue
             done
             ;;
         2)
@@ -280,7 +287,7 @@ while true; do
             reset_tcp
             reset_tc
             echo -e "\n${GREEN}✔ 复原已完成。${NC}"
-            read -p "按回车键返回主菜单..."
+            prompt_continue
             ;;
         0)
             echo -e "\n${CYAN}感谢使用，退出脚本。${NC}"
@@ -288,7 +295,7 @@ while true; do
             ;;
         *)
             echo -e "\n${RED}✘ 无效选择，请输入0-2之间的数字。${NC}"
-            read -p "按回车键继续..."
+            prompt_continue
             ;;
     esac
 done
