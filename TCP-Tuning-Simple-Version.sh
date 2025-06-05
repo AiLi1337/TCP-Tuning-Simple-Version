@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 
 # =================================================================
-# TCP调优脚本 - 最终美化版 v7
-# 作者: BlackSheep & Gemini
+# TCP调优脚本 - 最终版 v8
+# 作者: AiLi1337
 #
-# 此版本修复了在旧版bash中由 `local -n` 引起的语法兼容性错误。
+# 此版本根据用户反馈调整了子菜单的功能和排序。
 # 经过多轮排查，以确保代码的稳定性和准确性。
 # =================================================================
 
@@ -94,14 +94,14 @@ draw_main_menu() {
 # 绘制子菜单
 draw_submenu() {
     printf "${CYAN}┌─ 自由调整子菜单 ───────────────────────────────${NC}\n"
-    printf "${CYAN}│${NC}   ${YELLOW}1.${NC} 后台启动 iperf3\n"
+    printf "${CYAN}│${NC}   ${YELLOW}1.${NC} 后台启动 iperf3 服务\n"
+    printf "${CYAN}│${NC}   ${YELLOW}2.${NC} 停止 iperf3 服务\n"
     printf "${CYAN}│${NC}\n"
-    printf "${CYAN}│${NC}   ${YELLOW}2.${NC} TCP缓冲区(MiB)设为指定值 (永久生效)\n"
-    printf "${CYAN}│${NC}   ${YELLOW}3.${NC} TCP缓冲区(BDP/字节)设为指定值 (永久生效)\n"
+    printf "${CYAN}│${NC}   ${YELLOW}3.${NC} TCP缓冲区(MiB)设为指定值\n"
+    printf "${CYAN}│${NC}   ${YELLOW}4.${NC} TCP缓冲区(BDP/字节)设为指定值\n"
+    printf "${CYAN}│${NC}   ${YELLOW}5.${NC} 重置TCP缓冲区参数\n"
     printf "${CYAN}│${NC}\n"
-    printf "${CYAN}│${NC}   ${YELLOW}4.${NC} 重置TCP缓冲区参数\n"
-    printf "${CYAN}│${NC}   ${YELLOW}5.${NC} 返回主菜单\n"
-    printf "${CYAN}│${NC}   ${YELLOW}0.${NC} 停止 iperf3 并返回主菜单\n"
+    printf "${CYAN}│${NC}   ${YELLOW}0.${NC} 返回主菜单\n"
     printf "${CYAN}└────────────────────────────────────────────────────${NC}\n\n"
 }
 
@@ -150,6 +150,7 @@ fi
 
 # 检查并安装依赖
 if ! command -v iperf3 &> /dev/null || ! command -v nohup &> /dev/null || ! command -v bc &> /dev/null; then
+    draw_header
     echo "检测到依赖缺失，开始安装..."
     if [ -f /etc/debian_version ]; then
         apt-get update && apt-get install -y iperf3 coreutils bc
@@ -210,8 +211,13 @@ while true; do
                         echo -e "${YELLOW}ℹ 可在客户端使用以下命令测试： iperf3 -c $local_ip -R -t 30 -p $iperf_port${NC}"
                         ;;
                     2)
+                        echo -e "\n${CYAN}正在停止 iperf3 服务...${NC}"
+                        pkill iperf3 &>/dev/null
+                        echo -e "${GREEN}✔ iperf3 服务已停止。${NC}"
+                        ;;
+                    3)
                         while true; do
-                            printf "${GREEN}请输入TCP缓冲区max值 (单位 MiB, 可带两位小数) ➤ ${NC}"
+                            printf "${GREEN}请输入TCP缓冲区max值 (单位 MiB, 可带小数) ➤ ${NC}"
                             read tcp_value
                             if [[ "$tcp_value" =~ ^[0-9]*\.?[0-9]+$ ]] && (( $(echo "$tcp_value > 0" | bc -l) )); then
                                 break
@@ -229,7 +235,7 @@ while true; do
                         sysctl -p >/dev/null
                         echo -e "${GREEN}✔ 设置已永久保存到 /etc/sysctl.conf，重启后依然生效。${NC}"
                         ;;
-                    3)
+                    4)
                         while true; do
                             printf "${GREEN}请输入TCP缓冲区max值 (单位 BDP/字节) ➤ ${NC}"
                             read value
@@ -247,18 +253,11 @@ while true; do
                         sysctl -p >/dev/null
                         echo -e "${GREEN}✔ 设置已永久保存到 /etc/sysctl.conf，重启后依然生效。${NC}"
                         ;;
-                    4)
+                    5)
                         reset_tcp
                         ;;
-                    5)
-                        echo -e "\n${CYAN}正在返回主菜单...${NC}"
-                        sleep 1
-                        break
-                        ;;
                     0)
-                        echo -e "\n${CYAN}停止 iperf3 进程...${NC}"
-                        pkill iperf3 &>/dev/null
-                        echo -e "${GREEN}✔ 已停止。正在返回主菜单...${NC}"
+                        echo -e "\n${CYAN}正在返回主菜单...${NC}"
                         sleep 1
                         break 
                         ;;
