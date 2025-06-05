@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 
 # =================================================================
-# TCP调优脚本 - 最终美化版 v2
+# TCP调优脚本 - 最终美化版 v4
 # 作者: BlackSheep & Gemini
 #
-# 此版本统一了所有用户输入提示的UI风格，提供更一致的交互体验。
+# 此版本新增BDP(字节)输入功能，并移除了TC限速相关功能。
 # 经过多轮排查，以确保代码的稳定性和准确性。
 # =================================================================
 
@@ -56,8 +56,11 @@ draw_status() {
     # 检查依赖
     iperf3_status="${GREEN}已安装${NC}"
     nohup_status="${GREEN}已安装${NC}"
+    bc_status="${GREEN}已安装${NC}"
     if ! command -v iperf3 &> /dev/null; then iperf3_status="${RED}未安装${NC}"; fi
     if ! command -v nohup &> /dev/null; then nohup_status="${RED}未安装${NC}"; fi
+    if ! command -v bc &> /dev/null; then bc_status="${RED}未安装${NC}"; fi
+
 
     # 获取TCP缓冲区大小
     wmem=$(sysctl net.ipv4.tcp_wmem | awk -F'= ' '{print $2}')
@@ -66,6 +69,7 @@ draw_status() {
     printf "${GREEN}┌─ 系统状态 ───────────────────────────────────${NC}\n"
     printf "${GREEN}│${NC}  ● iperf3: %-42s ${NC}\n" "$iperf3_status"
     printf "${GREEN}│${NC}  ● nohup:  %-42s ${NC}\n" "$nohup_status"
+    printf "${GREEN}│${NC}  ● bc:     %-42s ${NC}\n" "$bc_status"
     printf "${GREEN}│${NC}\n"
     printf "${GREEN}│${NC}  TCP缓冲区 (当前值):\n"
     printf "${GREEN}│${NC}    读 (rmem): ${BOLD_WHITE}%-35s${NC}\n" "$rmem"
@@ -86,26 +90,26 @@ draw_main_menu() {
 draw_submenu() {
     printf "${CYAN}┌─ 自由调整子菜单 ───────────────────────────────${NC}\n"
     printf "${CYAN}│${NC}   ${YELLOW}1.${NC} 后台启动 iperf3\n"
-    printf "${CYAN}│${NC}   ${YELLOW}2.${NC} TCP缓冲区max值设为指定值 (永久生效)\n"
-    printf "${CYAN}│${NC}   ${YELLOW}3.${NC} 重置TCP缓冲区参数\n"
-    printf "${CYAN}│${NC}   ${YELLOW}4.${NC} 清除TC限速\n"
+    printf "${CYAN}│${NC}\n"
+    printf "${CYAN}│${NC}   ${YELLOW}2.${NC} TCP缓冲区(MiB)设为指定值 (永久生效)\n"
+    printf "${CYAN}│${NC}   ${YELLOW}3.${NC} TCP缓冲区(BDP/字节)设为指定值 (永久生效)\n"
+    printf "${CYAN}│${NC}\n"
+    printf "${CYAN}│${NC}   ${YELLOW}4.${NC} 重置TCP缓冲区参数\n"
     printf "${CYAN}│${NC}   ${YELLOW}0.${NC} 结束 iperf3 进程并返回主菜单\n"
     printf "${CYAN}└────────────────────────────────────────────────────${NC}\n\n"
 }
 
 # 绘制输入提示符，并接收输入
 prompt_input() {
-    # $1: 提示文本
-    # $2: 用于接收输入的变量名
     local prompt_text=$1
-    local -n input_var=$2 # 使用-n使其成为一个引用
+    local -n input_var=$2
     printf "${GREEN}${prompt_text} ➤ ${NC}"
     read input_var
 }
 
 # 绘制一个简单的确认提示
 prompt_continue() {
-    printf "${YELLOW}按回车键继续...${NC}"
+    printf "\n${YELLOW}按回车键继续...${NC}"
     read -r
 }
 
@@ -131,45 +135,6 @@ reset_tcp() {
     echo -e "\n${GREEN}✔ 已将TCP缓冲区(wmem/rmem)重置为默认值。${NC}"
 }
 
-# 重置TC限速规则
-reset_tc() {
-    if [ -f /etc/rc.local ]; then
-        > /etc/rc.local
-        echo "#!/bin/bash" > /etc/rc.local
-        chmod +x /etc/rc.local
-        echo -e "\n${GREEN}✔ 已清空 /etc/rc.local 并添加基本脚本头部。${NC}"
-    else
-        echo -e "\n${YELLOW}ℹ /etc/rc.local 文件不存在，无需清理。${NC}"
-    fi
-
-    echo ""; ip link show; echo ""
-    while true; do
-        prompt_input "请根据以上列表输入曾被限速的网卡名称" iface
-        if ip link show "$iface" &>/dev/null; then
-            break
-        else
-            echo -e "${RED}✘ 网卡名称无效或不存在，请重新输入。${NC}"
-        fi
-    done
-
-    if command -v tc &> /dev/null; then
-        tc qdisc del dev "$iface" root &>/dev/null
-        tc qdisc del dev "$iface" ingress &>/dev/null
-        echo -e "${GREEN}✔ 已尝试清除网卡 $iface 的 tc 限速规则。${NC}"
-    else
-        echo -e "${YELLOW}ℹ tc 命令不可用，未执行限速清理。${NC}"
-    fi
-
-    if ip link show ifb0 &>/dev/null; then
-        tc qdisc del dev ifb0 root &>/dev/null
-        ip link set dev ifb0 down
-        ip link delete ifb0
-        echo -e "${GREEN}✔ 已删除 ifb0 网卡。${NC}"
-    else
-        echo -e "${YELLOW}ℹ ifb0 网卡不存在，无需删除。${NC}"
-    fi
-}
-
 
 # =================================================================
 # 初始化与依赖检查
@@ -186,14 +151,14 @@ if ! grep -q "net.core.default_qdisc=fq" /etc/sysctl.conf; then
 fi
 
 # 检查并安装依赖
-if ! command -v iperf3 &> /dev/null || ! command -v nohup &> /dev/null; then
+if ! command -v iperf3 &> /dev/null || ! command -v nohup &> /dev/null || ! command -v bc &> /dev/null; then
     echo "检测到依赖缺失，开始安装..."
     if [ -f /etc/debian_version ]; then
-        apt-get update && apt-get install -y iperf3 coreutils
+        apt-get update && apt-get install -y iperf3 coreutils bc
     elif [ -f /etc/redhat-release ]; then
-        yum install -y iperf3 coreutils
+        yum install -y iperf3 coreutils bc
     else
-        echo -e "${RED}✘ 自动安装依赖失败，请自行安装 iperf3 和 coreutils。${NC}"
+        echo -e "${RED}✘ 自动安装依赖失败，请自行安装 iperf3, coreutils 和 bc。${NC}"
         exit 1
     fi
 fi
@@ -245,15 +210,20 @@ while true; do
                         ;;
                     2)
                         while true; do
-                            prompt_input "请输入TCP缓冲区max值 (单位 MiB)" tcp_value
-                            if [[ "$tcp_value" =~ ^[1-9][0-9]*$ ]]; then
-                                break
+                            prompt_input "请输入TCP缓冲区max值 (单位 MiB, 可带两位小数)" tcp_value
+                            if [[ "$tcp_value" =~ ^[0-9]+(\.[0-9]{1,2})?$ ]]; then
+                                if (( $(echo "$tcp_value > 0" | bc -l) )); then
+                                    break
+                                else
+                                    echo -e "${RED}✘ 输入值必须大于0。${NC}"
+                                fi
                             else
-                                echo -e "${RED}✘ 无效输入，请输入一个正整数。${NC}"
+                                echo -e "${RED}✘ 无效输入，请输入一个正数（最多两位小数）。${NC}"
                             fi
                         done
                         
-                        value=$((tcp_value * 1024 * 1024))
+                        value=$(printf "%.0f" "$(echo "$tcp_value * 1024 * 1024" | bc)")
+                        
                         echo -e "\n${CYAN}正在设置TCP缓冲区max值为 ${BOLD_WHITE}$tcp_value MiB ($value bytes)...${NC}"
                         clear_conf
                         echo "net.ipv4.tcp_wmem=4096 16384 $value" >> /etc/sysctl.conf
@@ -262,30 +232,42 @@ while true; do
                         echo -e "${GREEN}✔ 设置已永久保存到 /etc/sysctl.conf，重启后依然生效。${NC}"
                         ;;
                     3)
-                        reset_tcp
+                        while true; do
+                            prompt_input "请输入TCP缓冲区max值 (单位 BDP/字节)" value
+                            if [[ "$value" =~ ^[1-9][0-9]*$ ]]; then
+                                break
+                            else
+                                echo -e "${RED}✘ 无效输入，请输入一个正整数。${NC}"
+                            fi
+                        done
+
+                        echo -e "\n${CYAN}正在设置TCP缓冲区max值为 ${BOLD_WHITE}$value bytes...${NC}"
+                        clear_conf
+                        echo "net.ipv4.tcp_wmem=4096 16384 $value" >> /etc/sysctl.conf
+                        echo "net.ipv4.tcp_rmem=4096 87380 $value" >> /etc/sysctl.conf
+                        sysctl -p >/dev/null
+                        echo -e "${GREEN}✔ 设置已永久保存到 /etc/sysctl.conf，重启后依然生效。${NC}"
                         ;;
                     4)
-                        reset_tc
+                        reset_tcp
                         ;;
                     0)
                         echo -e "\n${CYAN}停止 iperf3 进程...${NC}"
                         pkill iperf3 &>/dev/null
                         echo -e "${GREEN}✔ 已停止。正在返回主菜单...${NC}"
                         sleep 1
-                        break # 跳出子菜单循环
+                        break 
                         ;;
                     *)
                         echo -e "\n${RED}✘ 无效选择，请输入0-4之间的数字。${NC}"
                         ;;
                 esac
-                echo ""
                 prompt_continue
             done
             ;;
         2)
-            echo -e "\n${CYAN}执行调整复原...${NC}"
+            echo -e "\n${CYAN}执行TCP参数复原...${NC}"
             reset_tcp
-            reset_tc
             echo -e "\n${GREEN}✔ 复原已完成。${NC}"
             prompt_continue
             ;;
