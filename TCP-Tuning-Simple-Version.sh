@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 
 # =================================================================
-# TCP调优脚本 - 最终美化版 v4
+# TCP调优脚本 - 最终美化版 v5
 # 作者: BlackSheep & Gemini
 #
-# 此版本新增BDP(字节)输入功能，并移除了TC限速相关功能。
+# 此版本新增了返回主菜单选项，并优化了UI显示。
 # 经过多轮排查，以确保代码的稳定性和准确性。
 # =================================================================
 
@@ -61,15 +61,15 @@ draw_status() {
     if ! command -v nohup &> /dev/null; then nohup_status="${RED}未安装${NC}"; fi
     if ! command -v bc &> /dev/null; then bc_status="${RED}未安装${NC}"; fi
 
-
     # 获取TCP缓冲区大小
     wmem=$(sysctl net.ipv4.tcp_wmem | awk -F'= ' '{print $2}')
     rmem=$(sysctl net.ipv4.tcp_rmem | awk -F'= ' '{print $2}')
 
     printf "${GREEN}┌─ 系统状态 ───────────────────────────────────${NC}\n"
-    printf "${GREEN}│${NC}  ● iperf3: %-42s ${NC}\n" "$iperf3_status"
-    printf "${GREEN}│${NC}  ● nohup:  %-42s ${NC}\n" "$nohup_status"
-    printf "${GREEN}│${NC}  ● bc:     %-42s ${NC}\n" "$bc_status"
+    printf "${GREEN}│${NC}  依赖状态:\n"
+    printf "${GREEN}│${NC}    ● %-8s : %s\n" "iperf3" "$iperf3_status"
+    printf "${GREEN}│${NC}    ● %-8s : %s\n" "nohup" "$nohup_status"
+    printf "${GREEN}│${NC}    ● %-8s : %s\n" "bc" "$bc_status"
     printf "${GREEN}│${NC}\n"
     printf "${GREEN}│${NC}  TCP缓冲区 (当前值):\n"
     printf "${GREEN}│${NC}    读 (rmem): ${BOLD_WHITE}%-35s${NC}\n" "$rmem"
@@ -95,7 +95,8 @@ draw_submenu() {
     printf "${CYAN}│${NC}   ${YELLOW}3.${NC} TCP缓冲区(BDP/字节)设为指定值 (永久生效)\n"
     printf "${CYAN}│${NC}\n"
     printf "${CYAN}│${NC}   ${YELLOW}4.${NC} 重置TCP缓冲区参数\n"
-    printf "${CYAN}│${NC}   ${YELLOW}0.${NC} 结束 iperf3 进程并返回主菜单\n"
+    printf "${CYAN}│${NC}   ${YELLOW}5.${NC} 返回主菜单\n"
+    printf "${CYAN}│${NC}   ${YELLOW}0.${NC} 停止 iperf3 并返回主菜单\n"
     printf "${CYAN}└────────────────────────────────────────────────────${NC}\n\n"
 }
 
@@ -251,6 +252,11 @@ while true; do
                     4)
                         reset_tcp
                         ;;
+                    5)
+                        echo -e "\n${CYAN}正在返回主菜单...${NC}"
+                        sleep 1
+                        break
+                        ;;
                     0)
                         echo -e "\n${CYAN}停止 iperf3 进程...${NC}"
                         pkill iperf3 &>/dev/null
@@ -259,7 +265,7 @@ while true; do
                         break 
                         ;;
                     *)
-                        echo -e "\n${RED}✘ 无效选择，请输入0-4之间的数字。${NC}"
+                        echo -e "\n${RED}✘ 无效选择，请输入0-5之间的数字。${NC}"
                         ;;
                 esac
                 prompt_continue
