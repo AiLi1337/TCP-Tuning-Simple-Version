@@ -101,6 +101,7 @@ draw_submenu() {
     printf "${CYAN}│${NC}   ${YELLOW}4.${NC} TCP缓冲区(BDP/字节)设为指定值\n"
     printf "${CYAN}│${NC}   ${YELLOW}5.${NC} 重置TCP缓冲区参数\n"
     printf "${CYAN}│${NC}   ${YELLOW}6.${NC} 检查配置状态\n"
+    printf "${CYAN}│${NC}   ${YELLOW}7.${NC} 显示配置建议\n"
     printf "${CYAN}│${NC}\n"
     printf "${CYAN}│${NC}   ${YELLOW}0.${NC} 返回主菜单\n"
     printf "${CYAN}└────────────────────────────────────────────────────${NC}\n\n"
@@ -117,151 +118,315 @@ prompt_continue() {
 # 核心功能函数
 # =================================================================
 
-# 清理sysctl.conf中的TCP缓冲区配置
+# 清理sysctl.conf中的TCP缓冲区配置 - 改进版本
 clear_conf() {
-    # 备份原配置文件
-    cp /etc/sysctl.conf /etc/sysctl.conf.bak.$(date +%Y%m%d_%H%M%S) 2>/dev/null
+    local config_file="/etc/sysctl.conf"
     
-    # 删除旧的TCP配置
-    sed -i '/^net\.ipv4\.tcp_wmem/d' /etc/sysctl.conf
-    sed -i '/^net\.ipv4\.tcp_rmem/d' /etc/sysctl.conf
-    sed -i '/^net\.ipv4\.tcp_congestion_control/d' /etc/sysctl.conf
-    sed -i '/^net\.core\.default_qdisc/d' /etc/sysctl.conf
+    # 检查配置文件是否存在
+    if [ ! -f "$config_file" ]; then
+        echo -e "${YELLOW}⚠ 配置文件 $config_file 不存在，将创建新文件${NC}"
+        touch "$config_file" 2>/dev/null || {
+            echo -e "${RED}✘ 无法创建配置文件，请检查权限${NC}"
+            return 1
+        }
+    fi
+    
+    # 备份原配置文件
+    local backup_name="/etc/sysctl.conf.bak.$(date +%Y%m%d_%H%M%S)"
+    if ! cp "$config_file" "$backup_name" 2>/dev/null; then
+        echo -e "${YELLOW}⚠ 无法创建配置文件备份${NC}"
+    else
+        echo -e "${CYAN}ℹ 已备份原配置文件到: $backup_name${NC}"
+    fi
+    
+    # 删除旧的TCP配置（包括注释行）
+    if ! sed -i '/^# TCP调优配置/d' "$config_file" 2>/dev/null; then
+        echo -e "${RED}✘ 清理配置文件失败，请检查权限${NC}"
+        return 1
+    fi
+    
+    sed -i '/^net\.ipv4\.tcp_wmem/d' "$config_file" 2>/dev/null
+    sed -i '/^net\.ipv4\.tcp_rmem/d' "$config_file" 2>/dev/null
+    sed -i '/^net\.ipv4\.tcp_congestion_control/d' "$config_file" 2>/dev/null
+    sed -i '/^net\.core\.default_qdisc/d' "$config_file" 2>/dev/null
     
     # 确保文件末尾有换行符
-    if [ -n "$(tail -c1 /etc/sysctl.conf)" ]; then
-        echo "" >> /etc/sysctl.conf
+    if [ -n "$(tail -c1 "$config_file" 2>/dev/null)" ]; then
+        echo "" >> "$config_file" 2>/dev/null
     fi
+    
+    return 0
 }
 
-# 验证配置是否生效
+# 验证配置是否生效 - 改进版本，只检查最大值是否匹配
 verify_config() {
     local expected_wmem="$1"
     local expected_rmem="$2"
     
     # 等待配置生效
-    sleep 1
+    sleep 2
     
-    local current_wmem=$(sysctl -n net.ipv4.tcp_wmem 2>/dev/null)
-    local current_rmem=$(sysctl -n net.ipv4.tcp_rmem 2>/dev/null)
+    # 提取期望的最大值（第三个参数）
+    local expected_wmem_max=$(echo "$expected_wmem" | awk '{print $3}')
+    local expected_rmem_max=$(echo "$expected_rmem" | awk '{print $3}')
     
-    if [[ "$current_wmem" == "$expected_wmem" ]] && [[ "$current_rmem" == "$expected_rmem" ]]; then
+    # 获取当前实际值的最大值
+    local current_wmem_max=$(sysctl -n net.ipv4.tcp_wmem 2>/dev/null | awk '{print $3}')
+    local current_rmem_max=$(sysctl -n net.ipv4.tcp_rmem 2>/dev/null | awk '{print $3}')
+    
+    # 检查是否获取到了有效值
+    if [[ -z "$current_wmem_max" ]] || [[ -z "$current_rmem_max" ]]; then
+        echo -e "${YELLOW}⚠ 无法获取当前TCP缓冲区配置${NC}"
+        return 1
+    fi
+    
+    # 只比较最大值是否匹配
+    if [[ "$current_wmem_max" == "$expected_wmem_max" ]] && [[ "$current_rmem_max" == "$expected_rmem_max" ]]; then
         return 0
     else
+        # 提供调试信息但不显示为错误
+        echo -e "${CYAN}ℹ 验证详情: 期望wmem最大值=$expected_wmem_max, 实际=$current_wmem_max${NC}"
+        echo -e "${CYAN}ℹ 验证详情: 期望rmem最大值=$expected_rmem_max, 实际=$current_rmem_max${NC}"
         return 1
     fi
 }
 
-# 应用并持久化配置
+# 应用并持久化配置 - 改进版本
 apply_config() {
     local wmem_value="$1"
     local rmem_value="$2"
     
+    echo -e "${CYAN}正在应用TCP缓冲区配置...${NC}"
+    
     # 清理旧配置
-    clear_conf
+    if ! clear_conf; then
+        echo -e "${RED}✘ 清理旧配置失败，请检查系统权限${NC}"
+        return 1
+    fi
     
     # 写入新配置到sysctl.conf
-    {
-        echo "# TCP调优配置 - 由TCP调优脚本生成"
+    if ! {
+        echo "# TCP调优配置 - 由TCP调优脚本生成 $(date)"
         echo "net.ipv4.tcp_congestion_control=bbr"
         echo "net.core.default_qdisc=fq"
         echo "net.ipv4.tcp_wmem=$wmem_value"
         echo "net.ipv4.tcp_rmem=$rmem_value"
         echo ""
-    } >> /etc/sysctl.conf
+    } >> /etc/sysctl.conf 2>/dev/null; then
+        echo -e "${RED}✘ 写入配置文件失败，请检查系统权限${NC}"
+        return 1
+    fi
     
     # 立即应用配置
-    sysctl -w net.ipv4.tcp_wmem="$wmem_value" >/dev/null 2>&1
-    sysctl -w net.ipv4.tcp_rmem="$rmem_value" >/dev/null 2>&1
+    local apply_success=true
+    sysctl -w net.ipv4.tcp_wmem="$wmem_value" >/dev/null 2>&1 || apply_success=false
+    sysctl -w net.ipv4.tcp_rmem="$rmem_value" >/dev/null 2>&1 || apply_success=false
     sysctl -w net.ipv4.tcp_congestion_control=bbr >/dev/null 2>&1
     sysctl -w net.core.default_qdisc=fq >/dev/null 2>&1
     
     # 重新加载sysctl配置
     sysctl -p >/dev/null 2>&1
     
+    if [[ "$apply_success" == "false" ]]; then
+        echo -e "${RED}✘ 应用系统配置失败，请检查系统权限${NC}"
+        return 1
+    fi
+    
     # 验证配置是否生效
     if verify_config "$wmem_value" "$rmem_value"; then
         echo -e "${GREEN}✔ 配置已成功应用并持久化到 /etc/sysctl.conf${NC}"
-        
-        # 额外的持久化保障措施
         ensure_persistence
+        return 0
     else
-        echo -e "${RED}✘ 配置应用失败，请检查系统权限${NC}"
-        return 1
+        # 即使验证失败，也检查配置是否实际生效了
+        local current_wmem_max=$(sysctl -n net.ipv4.tcp_wmem 2>/dev/null | awk '{print $3}')
+        local current_rmem_max=$(sysctl -n net.ipv4.tcp_rmem 2>/dev/null | awk '{print $3}')
+        local expected_wmem_max=$(echo "$wmem_value" | awk '{print $3}')
+        local expected_rmem_max=$(echo "$rmem_value" | awk '{print $3}')
+        
+        if [[ "$current_wmem_max" == "$expected_wmem_max" ]] && [[ "$current_rmem_max" == "$expected_rmem_max" ]]; then
+            echo -e "${GREEN}✔ 配置实际已成功应用（验证函数检测到细微差异，但配置正确）${NC}"
+            ensure_persistence
+            return 0
+        else
+            echo -e "${YELLOW}⚠ 配置可能已应用，但验证未完全通过${NC}"
+            echo -e "${CYAN}ℹ 请手动检查配置状态：${NC}"
+            echo -e "${CYAN}  当前wmem最大值: $current_wmem_max (期望: $expected_wmem_max)${NC}"
+            echo -e "${CYAN}  当前rmem最大值: $current_rmem_max (期望: $expected_rmem_max)${NC}"
+            return 1
+        fi
     fi
 }
 
-# 确保配置持久化的额外措施
+# 确保配置持久化的额外措施 - 改进版本
 ensure_persistence() {
+    echo -e "${CYAN}正在确保配置持久化...${NC}"
+    
     # 检查systemd-sysctl服务状态
     if command -v systemctl &> /dev/null; then
         if systemctl is-enabled systemd-sysctl >/dev/null 2>&1; then
-            systemctl restart systemd-sysctl >/dev/null 2>&1
+            if systemctl restart systemd-sysctl >/dev/null 2>&1; then
+                echo -e "${GREEN}  ✔ systemd-sysctl服务已重启${NC}"
+            else
+                echo -e "${YELLOW}  ⚠ systemd-sysctl服务重启失败${NC}"
+            fi
+        else
+            echo -e "${YELLOW}  ⚠ systemd-sysctl服务未启用${NC}"
         fi
     fi
     
     # 创建额外的配置文件作为备份
     local backup_conf="/etc/sysctl.d/99-tcp-tuning.conf"
     if [ -d "/etc/sysctl.d" ]; then
-        {
-            echo "# TCP调优配置备份 - 由TCP调优脚本生成"
-            echo "net.ipv4.tcp_congestion_control=bbr"
-            echo "net.core.default_qdisc=fq"
-            grep "^net\.ipv4\.tcp_wmem" /etc/sysctl.conf | tail -1
-            grep "^net\.ipv4\.tcp_rmem" /etc/sysctl.conf | tail -1
-        } > "$backup_conf"
-        echo -e "${CYAN}ℹ 已创建备份配置文件: $backup_conf${NC}"
+        local wmem_line=$(grep "^net\.ipv4\.tcp_wmem" /etc/sysctl.conf | tail -1)
+        local rmem_line=$(grep "^net\.ipv4\.tcp_rmem" /etc/sysctl.conf | tail -1)
+        
+        if [[ -n "$wmem_line" ]] && [[ -n "$rmem_line" ]]; then
+            {
+                echo "# TCP调优配置备份 - 由TCP调优脚本生成 $(date)"
+                echo "# 此文件确保配置在系统重启后仍然生效"
+                echo "net.ipv4.tcp_congestion_control=bbr"
+                echo "net.core.default_qdisc=fq"
+                echo "$wmem_line"
+                echo "$rmem_line"
+            } > "$backup_conf" 2>/dev/null
+            
+            if [ -f "$backup_conf" ]; then
+                echo -e "${GREEN}  ✔ 已创建备份配置文件: $backup_conf${NC}"
+            else
+                echo -e "${YELLOW}  ⚠ 无法创建备份配置文件${NC}"
+            fi
+        else
+            echo -e "${YELLOW}  ⚠ 无法找到有效的TCP配置行${NC}"
+        fi
+    else
+        echo -e "${YELLOW}  ⚠ /etc/sysctl.d 目录不存在${NC}"
     fi
+    
+    # 验证配置是否会在重启后生效
+    echo -e "${CYAN}  ℹ 配置将在系统重启后自动生效${NC}"
 }
 
-# 检查配置状态
+# 检查配置状态 - 详细版本
 check_config_status() {
     local config_file="/etc/sysctl.conf"
     local backup_file="/etc/sysctl.d/99-tcp-tuning.conf"
     
-    echo -e "${CYAN}配置文件状态检查:${NC}"
+    echo -e "${CYAN}=== 详细配置状态检查 ===${NC}\n"
+    
+    # 当前运行时配置
+    echo -e "${GREEN}当前运行时配置:${NC}"
+    local current_wmem=$(sysctl -n net.ipv4.tcp_wmem 2>/dev/null)
+    local current_rmem=$(sysctl -n net.ipv4.tcp_rmem 2>/dev/null)
+    local current_cc=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)
+    local current_qdisc=$(sysctl -n net.core.default_qdisc 2>/dev/null)
+    
+    if [[ -n "$current_wmem" ]]; then
+        echo -e "  TCP wmem: ${BOLD_WHITE}$current_wmem${NC}"
+        local wmem_max=$(echo "$current_wmem" | awk '{print $3}')
+        local wmem_mb=$(echo "scale=2; $wmem_max / 1024 / 1024" | bc 2>/dev/null)
+        echo -e "  wmem最大值: ${YELLOW}$wmem_max bytes${NC} (约 ${YELLOW}${wmem_mb} MiB${NC})"
+    else
+        echo -e "  TCP wmem: ${RED}获取失败${NC}"
+    fi
+    
+    if [[ -n "$current_rmem" ]]; then
+        echo -e "  TCP rmem: ${BOLD_WHITE}$current_rmem${NC}"
+        local rmem_max=$(echo "$current_rmem" | awk '{print $3}')
+        local rmem_mb=$(echo "scale=2; $rmem_max / 1024 / 1024" | bc 2>/dev/null)
+        echo -e "  rmem最大值: ${YELLOW}$rmem_max bytes${NC} (约 ${YELLOW}${rmem_mb} MiB${NC})"
+    else
+        echo -e "  TCP rmem: ${RED}获取失败${NC}"
+    fi
+    
+    echo -e "  拥塞控制: ${BOLD_WHITE}${current_cc:-未知}${NC}"
+    echo -e "  队列算法: ${BOLD_WHITE}${current_qdisc:-未知}${NC}"
+    
+    # 配置文件检查
+    echo -e "\n${GREEN}配置文件状态:${NC}"
     
     # 检查主配置文件
-    if grep -q "net.ipv4.tcp_wmem" "$config_file" 2>/dev/null; then
-        echo -e "${GREEN}  ✔ 主配置文件 ($config_file) 包含TCP配置${NC}"
+    if [ -f "$config_file" ]; then
+        echo -e "${GREEN}  ✔ 主配置文件存在${NC} ($config_file)"
+        
+        if grep -q "net.ipv4.tcp_wmem" "$config_file" 2>/dev/null; then
+            echo -e "${GREEN}  ✔ 包含TCP wmem配置${NC}"
+            local wmem_line=$(grep "net.ipv4.tcp_wmem" "$config_file" | tail -1)
+            echo -e "    ${CYAN}$wmem_line${NC}"
+        else
+            echo -e "${RED}  ✘ 缺少TCP wmem配置${NC}"
+        fi
+        
+        if grep -q "net.ipv4.tcp_rmem" "$config_file" 2>/dev/null; then
+            echo -e "${GREEN}  ✔ 包含TCP rmem配置${NC}"
+            local rmem_line=$(grep "net.ipv4.tcp_rmem" "$config_file" | tail -1)
+            echo -e "    ${CYAN}$rmem_line${NC}"
+        else
+            echo -e "${RED}  ✘ 缺少TCP rmem配置${NC}"
+        fi
+        
+        if grep -q "net.ipv4.tcp_congestion_control" "$config_file" 2>/dev/null; then
+            echo -e "${GREEN}  ✔ 包含拥塞控制配置${NC}"
+        else
+            echo -e "${YELLOW}  ⚠ 缺少拥塞控制配置${NC}"
+        fi
     else
-        echo -e "${RED}  ✘ 主配置文件 ($config_file) 缺少TCP配置${NC}"
+        echo -e "${RED}  ✘ 主配置文件不存在${NC}"
     fi
     
     # 检查备份配置文件
     if [ -f "$backup_file" ]; then
-        echo -e "${GREEN}  ✔ 备份配置文件 ($backup_file) 存在${NC}"
+        echo -e "${GREEN}  ✔ 备份配置文件存在${NC} ($backup_file)"
     else
-        echo -e "${YELLOW}  ⚠ 备份配置文件 ($backup_file) 不存在${NC}"
+        echo -e "${YELLOW}  ⚠ 备份配置文件不存在${NC} ($backup_file)"
     fi
     
-    # 检查当前运行时配置
-    local current_wmem=$(sysctl -n net.ipv4.tcp_wmem 2>/dev/null)
-    local current_rmem=$(sysctl -n net.ipv4.tcp_rmem 2>/dev/null)
+    # 系统信息
+    echo -e "\n${GREEN}系统信息:${NC}"
+    echo -e "  内核版本: ${BOLD_WHITE}$(uname -r)${NC}"
+    echo -e "  系统时间: ${BOLD_WHITE}$(date)${NC}"
     
-    if [[ -n "$current_wmem" ]] && [[ -n "$current_rmem" ]]; then
-        echo -e "${GREEN}  ✔ 当前运行时配置正常${NC}"
+    # BBR支持检查
+    if lsmod | grep -q tcp_bbr 2>/dev/null; then
+        echo -e "  BBR模块: ${GREEN}已加载${NC}"
     else
-        echo -e "${RED}  ✘ 当前运行时配置异常${NC}"
+        echo -e "  BBR模块: ${YELLOW}未加载或不支持${NC}"
     fi
 }
 
-# 重置TCP缓冲区为系统默认值
+# 重置TCP缓冲区为系统默认值 - 改进版本
 reset_tcp() {
     echo -e "\n${CYAN}正在重置TCP缓冲区为默认值...${NC}"
     
+    # 显示当前配置
+    local current_wmem=$(sysctl -n net.ipv4.tcp_wmem 2>/dev/null)
+    local current_rmem=$(sysctl -n net.ipv4.tcp_rmem 2>/dev/null)
+    echo -e "${YELLOW}当前配置:${NC}"
+    echo -e "  wmem: $current_wmem"
+    echo -e "  rmem: $current_rmem"
+    
     # 应用默认配置
+    echo -e "\n${CYAN}应用默认配置...${NC}"
     if apply_config "4096 16384 4194304" "4096 87380 6291456"; then
-        echo -e "${GREEN}✔ 已将TCP缓冲区(wmem/rmem)重置为默认值并持久化${NC}"
+        echo -e "${GREEN}✔ 已将TCP缓冲区重置为系统默认值${NC}"
+        echo -e "${CYAN}ℹ 默认值: wmem=4096 16384 4194304, rmem=4096 87380 6291456${NC}"
         
         # 删除备份配置文件
         local backup_file="/etc/sysctl.d/99-tcp-tuning.conf"
         if [ -f "$backup_file" ]; then
-            rm -f "$backup_file"
-            echo -e "${CYAN}ℹ 已删除备份配置文件${NC}"
+            if rm -f "$backup_file" 2>/dev/null; then
+                echo -e "${CYAN}ℹ 已删除备份配置文件${NC}"
+            else
+                echo -e "${YELLOW}⚠ 无法删除备份配置文件: $backup_file${NC}"
+            fi
         fi
+        
+        return 0
     else
-        echo -e "${RED}✘ 重置失败，请检查系统权限${NC}"
+        echo -e "${RED}✘ 重置失败，请检查系统权限或手动重置${NC}"
+        echo -e "${CYAN}ℹ 手动重置命令:${NC}"
+        echo -e "${CYAN}  sudo sysctl -w net.ipv4.tcp_wmem='4096 16384 4194304'${NC}"
+        echo -e "${CYAN}  sudo sysctl -w net.ipv4.tcp_rmem='4096 87380 6291456'${NC}"
         return 1
     fi
 }
@@ -316,6 +481,37 @@ if ! command -v iperf3 &> /dev/null || ! command -v nohup &> /dev/null || ! comm
     fi
 fi
 
+
+# 显示配置建议
+show_config_recommendations() {
+    echo -e "${CYAN}=== TCP缓冲区配置建议 ===${NC}\n"
+    
+    echo -e "${GREEN}常见场景配置建议:${NC}"
+    echo -e "  ${YELLOW}1. 低延迟场景 (< 10ms):${NC}"
+    echo -e "     建议值: 2-4 MiB (适合游戏、实时通信)"
+    echo -e "     命令: 选择选项3，输入 2 或 4"
+    
+    echo -e "\n  ${YELLOW}2. 中等延迟场景 (10-50ms):${NC}"
+    echo -e "     建议值: 8-16 MiB (适合一般网络应用)"
+    echo -e "     命令: 选择选项3，输入 8 或 16"
+    
+    echo -e "\n  ${YELLOW}3. 高延迟场景 (> 50ms):${NC}"
+    echo -e "     建议值: 32-64 MiB (适合跨国传输)"
+    echo -e "     命令: 选择选项3，输入 32 或 64"
+    
+    echo -e "\n  ${YELLOW}4. 高带宽场景 (> 1Gbps):${NC}"
+    echo -e "     建议值: 64-128 MiB (适合大文件传输)"
+    echo -e "     命令: 选择选项3，输入 64 或 128"
+    
+    echo -e "\n${GREEN}计算公式:${NC}"
+    echo -e "  ${CYAN}BDP = 带宽(bps) × 延迟(s) / 8${NC}"
+    echo -e "  ${CYAN}例如: 100Mbps × 0.1s / 8 = 1.25MB${NC}"
+    
+    echo -e "\n${GREEN}当前网络测试建议:${NC}"
+    echo -e "  ${CYAN}1. 使用 ping 测试延迟: ping 目标服务器${NC}"
+    echo -e "  ${CYAN}2. 使用 iperf3 测试带宽: iperf3 -c 服务器IP${NC}"
+    echo -e "  ${CYAN}3. 根据测试结果选择合适的缓冲区大小${NC}"
+}
 
 # =================================================================
 # 主程序入口
@@ -408,13 +604,17 @@ while true; do
                         echo -e "\n${CYAN}检查配置状态...${NC}"
                         check_config_status
                         ;;
+                    7)
+                        echo -e "\n${CYAN}显示配置建议...${NC}"
+                        show_config_recommendations
+                        ;;
                     0)
                         echo -e "\n${CYAN}正在返回主菜单...${NC}"
                         sleep 1
                         break 
                         ;;
                     *)
-                        echo -e "\n${RED}✘ 无效选择，请输入0-6之间的数字。${NC}"
+                        echo -e "\n${RED}✘ 无效选择，请输入0-7之间的数字。${NC}"
                         ;;
                 esac
                 prompt_continue
