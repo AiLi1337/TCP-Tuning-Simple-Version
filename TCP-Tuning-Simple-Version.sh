@@ -100,6 +100,7 @@ draw_submenu() {
     printf "${CYAN}│${NC}   ${YELLOW}3.${NC} TCP缓冲区(MiB)设为指定值\n"
     printf "${CYAN}│${NC}   ${YELLOW}4.${NC} TCP缓冲区(BDP/字节)设为指定值\n"
     printf "${CYAN}│${NC}   ${YELLOW}5.${NC} 重置TCP缓冲区参数\n"
+    printf "${CYAN}│${NC}   ${YELLOW}6.${NC} 检查配置状态\n"
     printf "${CYAN}│${NC}\n"
     printf "${CYAN}│${NC}   ${YELLOW}0.${NC} 返回主菜单\n"
     printf "${CYAN}└────────────────────────────────────────────────────${NC}\n\n"
@@ -118,19 +119,151 @@ prompt_continue() {
 
 # 清理sysctl.conf中的TCP缓冲区配置
 clear_conf() {
+    # 备份原配置文件
+    cp /etc/sysctl.conf /etc/sysctl.conf.bak.$(date +%Y%m%d_%H%M%S) 2>/dev/null
+    
+    # 删除旧的TCP配置
     sed -i '/^net\.ipv4\.tcp_wmem/d' /etc/sysctl.conf
     sed -i '/^net\.ipv4\.tcp_rmem/d' /etc/sysctl.conf
+    sed -i '/^net\.ipv4\.tcp_congestion_control/d' /etc/sysctl.conf
+    sed -i '/^net\.core\.default_qdisc/d' /etc/sysctl.conf
+    
+    # 确保文件末尾有换行符
     if [ -n "$(tail -c1 /etc/sysctl.conf)" ]; then
         echo "" >> /etc/sysctl.conf
     fi
 }
 
+# 验证配置是否生效
+verify_config() {
+    local expected_wmem="$1"
+    local expected_rmem="$2"
+    
+    # 等待配置生效
+    sleep 1
+    
+    local current_wmem=$(sysctl -n net.ipv4.tcp_wmem 2>/dev/null)
+    local current_rmem=$(sysctl -n net.ipv4.tcp_rmem 2>/dev/null)
+    
+    if [[ "$current_wmem" == "$expected_wmem" ]] && [[ "$current_rmem" == "$expected_rmem" ]]; then
+        return 0
+    else
+        return 1
+    fi
+}
+
+# 应用并持久化配置
+apply_config() {
+    local wmem_value="$1"
+    local rmem_value="$2"
+    
+    # 清理旧配置
+    clear_conf
+    
+    # 写入新配置到sysctl.conf
+    {
+        echo "# TCP调优配置 - 由TCP调优脚本生成"
+        echo "net.ipv4.tcp_congestion_control=bbr"
+        echo "net.core.default_qdisc=fq"
+        echo "net.ipv4.tcp_wmem=$wmem_value"
+        echo "net.ipv4.tcp_rmem=$rmem_value"
+        echo ""
+    } >> /etc/sysctl.conf
+    
+    # 立即应用配置
+    sysctl -w net.ipv4.tcp_wmem="$wmem_value" >/dev/null 2>&1
+    sysctl -w net.ipv4.tcp_rmem="$rmem_value" >/dev/null 2>&1
+    sysctl -w net.ipv4.tcp_congestion_control=bbr >/dev/null 2>&1
+    sysctl -w net.core.default_qdisc=fq >/dev/null 2>&1
+    
+    # 重新加载sysctl配置
+    sysctl -p >/dev/null 2>&1
+    
+    # 验证配置是否生效
+    if verify_config "$wmem_value" "$rmem_value"; then
+        echo -e "${GREEN}✔ 配置已成功应用并持久化到 /etc/sysctl.conf${NC}"
+        
+        # 额外的持久化保障措施
+        ensure_persistence
+    else
+        echo -e "${RED}✘ 配置应用失败，请检查系统权限${NC}"
+        return 1
+    fi
+}
+
+# 确保配置持久化的额外措施
+ensure_persistence() {
+    # 检查systemd-sysctl服务状态
+    if command -v systemctl &> /dev/null; then
+        if systemctl is-enabled systemd-sysctl >/dev/null 2>&1; then
+            systemctl restart systemd-sysctl >/dev/null 2>&1
+        fi
+    fi
+    
+    # 创建额外的配置文件作为备份
+    local backup_conf="/etc/sysctl.d/99-tcp-tuning.conf"
+    if [ -d "/etc/sysctl.d" ]; then
+        {
+            echo "# TCP调优配置备份 - 由TCP调优脚本生成"
+            echo "net.ipv4.tcp_congestion_control=bbr"
+            echo "net.core.default_qdisc=fq"
+            grep "^net\.ipv4\.tcp_wmem" /etc/sysctl.conf | tail -1
+            grep "^net\.ipv4\.tcp_rmem" /etc/sysctl.conf | tail -1
+        } > "$backup_conf"
+        echo -e "${CYAN}ℹ 已创建备份配置文件: $backup_conf${NC}"
+    fi
+}
+
+# 检查配置状态
+check_config_status() {
+    local config_file="/etc/sysctl.conf"
+    local backup_file="/etc/sysctl.d/99-tcp-tuning.conf"
+    
+    echo -e "${CYAN}配置文件状态检查:${NC}"
+    
+    # 检查主配置文件
+    if grep -q "net.ipv4.tcp_wmem" "$config_file" 2>/dev/null; then
+        echo -e "${GREEN}  ✔ 主配置文件 ($config_file) 包含TCP配置${NC}"
+    else
+        echo -e "${RED}  ✘ 主配置文件 ($config_file) 缺少TCP配置${NC}"
+    fi
+    
+    # 检查备份配置文件
+    if [ -f "$backup_file" ]; then
+        echo -e "${GREEN}  ✔ 备份配置文件 ($backup_file) 存在${NC}"
+    else
+        echo -e "${YELLOW}  ⚠ 备份配置文件 ($backup_file) 不存在${NC}"
+    fi
+    
+    # 检查当前运行时配置
+    local current_wmem=$(sysctl -n net.ipv4.tcp_wmem 2>/dev/null)
+    local current_rmem=$(sysctl -n net.ipv4.tcp_rmem 2>/dev/null)
+    
+    if [[ -n "$current_wmem" ]] && [[ -n "$current_rmem" ]]; then
+        echo -e "${GREEN}  ✔ 当前运行时配置正常${NC}"
+    else
+        echo -e "${RED}  ✘ 当前运行时配置异常${NC}"
+    fi
+}
+
 # 重置TCP缓冲区为系统默认值
 reset_tcp() {
-    clear_conf
-    sysctl -w net.ipv4.tcp_wmem="4096 16384 4194304" >/dev/null
-    sysctl -w net.ipv4.tcp_rmem="4096 87380 6291456" >/dev/null
-    echo -e "\n${GREEN}✔ 已将TCP缓冲区(wmem/rmem)重置为默认值。${NC}"
+    echo -e "\n${CYAN}正在重置TCP缓冲区为默认值...${NC}"
+    
+    # 应用默认配置
+    if apply_config "4096 16384 4194304" "4096 87380 6291456"; then
+        echo -e "${GREEN}✔ 已将TCP缓冲区(wmem/rmem)重置为默认值并持久化${NC}"
+        
+        # 删除备份配置文件
+        local backup_file="/etc/sysctl.d/99-tcp-tuning.conf"
+        if [ -f "$backup_file" ]; then
+            rm -f "$backup_file"
+            echo -e "${CYAN}ℹ 已删除备份配置文件${NC}"
+        fi
+    else
+        echo -e "${RED}✘ 重置失败，请检查系统权限${NC}"
+        return 1
+    fi
 }
 
 
@@ -138,15 +271,36 @@ reset_tcp() {
 # 初始化与依赖检查
 # =================================================================
 
-# 启用BBR和FQ
-sysctl -w net.ipv4.tcp_congestion_control=bbr &>/dev/null
-sysctl -w net.core.default_qdisc=fq &>/dev/null
-if ! grep -q "net.ipv4.tcp_congestion_control=bbr" /etc/sysctl.conf; then
-    echo "net.ipv4.tcp_congestion_control=bbr" >> /etc/sysctl.conf
-fi
-if ! grep -q "net.core.default_qdisc=fq" /etc/sysctl.conf; then
-    echo "net.core.default_qdisc=fq" >> /etc/sysctl.conf
-fi
+# 初始化BBR和FQ（仅在需要时配置）
+init_bbr_fq() {
+    local bbr_enabled=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)
+    local fq_enabled=$(sysctl -n net.core.default_qdisc 2>/dev/null)
+    
+    # 只有在当前不是BBR时才设置
+    if [[ "$bbr_enabled" != "bbr" ]]; then
+        sysctl -w net.ipv4.tcp_congestion_control=bbr &>/dev/null
+    fi
+    
+    if [[ "$fq_enabled" != "fq" ]]; then
+        sysctl -w net.core.default_qdisc=fq &>/dev/null
+    fi
+    
+    # 检查配置文件中是否已存在，避免重复添加
+    if ! grep -q "^net\.ipv4\.tcp_congestion_control=bbr" /etc/sysctl.conf; then
+        if ! grep -q "net.ipv4.tcp_congestion_control" /etc/sysctl.conf; then
+            echo "net.ipv4.tcp_congestion_control=bbr" >> /etc/sysctl.conf
+        fi
+    fi
+    
+    if ! grep -q "^net\.core\.default_qdisc=fq" /etc/sysctl.conf; then
+        if ! grep -q "net.core.default_qdisc" /etc/sysctl.conf; then
+            echo "net.core.default_qdisc=fq" >> /etc/sysctl.conf
+        fi
+    fi
+}
+
+# 初始化BBR和FQ
+init_bbr_fq
 
 # 检查并安装依赖
 if ! command -v iperf3 &> /dev/null || ! command -v nohup &> /dev/null || ! command -v bc &> /dev/null; then
@@ -231,11 +385,7 @@ while true; do
                         value=$(printf "%.0f" "$(echo "$tcp_value * 1024 * 1024" | bc)")
                         
                         echo -e "\n${CYAN}正在设置TCP缓冲区max值为 ${BOLD_WHITE}$tcp_value MiB ($value bytes)...${NC}"
-                        clear_conf
-                        echo "net.ipv4.tcp_wmem=4096 16384 $value" >> /etc/sysctl.conf
-                        echo "net.ipv4.tcp_rmem=4096 87380 $value" >> /etc/sysctl.conf
-                        sysctl -p >/dev/null
-                        echo -e "${GREEN}✔ 设置已永久保存到 /etc/sysctl.conf，重启后依然生效。${NC}"
+                        apply_config "4096 16384 $value" "4096 87380 $value"
                         ;;
                     4)
                         while true; do
@@ -249,14 +399,14 @@ while true; do
                         done
 
                         echo -e "\n${CYAN}正在设置TCP缓冲区max值为 ${BOLD_WHITE}$value bytes...${NC}"
-                        clear_conf
-                        echo "net.ipv4.tcp_wmem=4096 16384 $value" >> /etc/sysctl.conf
-                        echo "net.ipv4.tcp_rmem=4096 87380 $value" >> /etc/sysctl.conf
-                        sysctl -p >/dev/null
-                        echo -e "${GREEN}✔ 设置已永久保存到 /etc/sysctl.conf，重启后依然生效。${NC}"
+                        apply_config "4096 16384 $value" "4096 87380 $value"
                         ;;
                     5)
                         reset_tcp
+                        ;;
+                    6)
+                        echo -e "\n${CYAN}检查配置状态...${NC}"
+                        check_config_status
                         ;;
                     0)
                         echo -e "\n${CYAN}正在返回主菜单...${NC}"
@@ -264,7 +414,7 @@ while true; do
                         break 
                         ;;
                     *)
-                        echo -e "\n${RED}✘ 无效选择，请输入0-5之间的数字。${NC}"
+                        echo -e "\n${RED}✘ 无效选择，请输入0-6之间的数字。${NC}"
                         ;;
                 esac
                 prompt_continue
