@@ -73,6 +73,7 @@ draw_status() {
         
         printf "${GREEN}┌─ 当前状态 ───────────────────────────────────${NC}\n"
         printf "${GREEN}│${NC}  TCP缓冲区: ${BOLD_WHITE}${wmem_mb} MiB${NC} (写) / ${BOLD_WHITE}${rmem_mb} MiB${NC} (读)\n"
+        printf "${GREEN}│${NC}             ${CYAN}${wmem_max} bytes${NC} (写) / ${CYAN}${rmem_max} bytes${NC} (读)\n"
         
         # 检查iperf3状态
         if pgrep iperf3 >/dev/null 2>&1; then
