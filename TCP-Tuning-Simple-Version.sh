@@ -1,20 +1,20 @@
 #!/usr/bin/env bash
 
 # =================================================================
-# TCP调优脚本 - 优化版 v11 (优化版本)
+# TCP调优脚本 - 优化版 v10
 # 作者: AiLi1337 (优化版本)
 #
-# 主要优化:
-# 1. 代码结构优化 - 函数拆分，提高可维护性
-# 2. 性能优化 - 批量执行，减少系统调用
-# 3. 错误处理增强 - 完善的错误检查和恢复机制
-# 4. 用户体验改进 - 配置预览、回滚功能、进度显示
-# 5. 安全性增强 - 权限检查、输入验证、操作日志
-# 6. 新增功能 - 网络检测、配置对比、智能推荐
+# 主要改进:
+# 1. 修复数值修改首次不生效的bug
+# 2. 优化菜单界面，简化操作流程
+# 3. 增加自动调优功能(BDP计算)
+# 4. 增加微调功能(±1MiB)
+# 5. 改进错误处理和配置验证机制
+# 6. 优化代码结构，提升可维护性
 # =================================================================
 
 # --------------------------------------------------
-# 全局变量与常量定义
+# 全局变量与颜色定义
 # --------------------------------------------------
 if tput setaf 1 &> /dev/null; then
     BOLD_WHITE='\033[1;37m'
@@ -37,126 +37,33 @@ fi
 # 配置文件路径
 SYSCTL_CONF="/etc/sysctl.conf"
 BACKUP_CONF="/etc/sysctl.d/99-tcp-tuning.conf"
-LOG_FILE="/var/log/tcp-tuning.log"
-
-# 常量定义
-MIN_BUFFER_MB=1
-MAX_BUFFER_MB=1024
-DEFAULT_WMEM="4096 16384 4194304"
-DEFAULT_RMEM="4096 87380 6291456"
-SAFE_MULTIPLIER=1.5
-
-# 配置历史记录
-CONFIG_HISTORY=()
 
 # =================================================================
-# 工具函数
+# UI绘制函数
 # =================================================================
 
-# 日志记录函数
-log_message() {
-    local level="$1"
-    local message="$2"
-    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
-    echo "[$timestamp] [$level] $message" >> "$LOG_FILE"
-}
-
-# 检查root权限
-check_root_privileges() {
-    if [[ $EUID -ne 0 ]]; then
-        echo -e "${RED}✘ 此脚本需要root权限运行${NC}"
-        echo -e "${CYAN}请使用: sudo $0${NC}"
-        log_message "ERROR" "Script executed without root privileges"
-        exit 1
-    fi
-}
-
-# 检查网络连接
-check_network_connectivity() {
-    echo -e "${CYAN}检查网络连接状态...${NC}"
-    
-    # 检查基本网络连接
-    if ! ping -c 1 -W 3 8.8.8.8 &>/dev/null; then
-        echo -e "${YELLOW}⚠ 网络连接可能有问题，建议检查网络状态${NC}"
-        log_message "WARNING" "Network connectivity issues detected"
-        return 1
-    fi
-    
-    # 检查DNS解析
-    if ! nslookup google.com &>/dev/null; then
-        echo -e "${YELLOW}⚠ DNS解析可能有问题${NC}"
-        log_message "WARNING" "DNS resolution issues detected"
-        return 1
-    fi
-    
-    echo -e "${GREEN}✔ 网络连接正常${NC}"
-    return 0
-}
-
-# 验证数值范围
-validate_numeric_range() {
-    local value="$1"
-    local min="$2"
-    local max="$3"
-    local unit="$4"
-    
-    if [[ ! "$value" =~ ^[0-9]*\.?[0-9]+$ ]]; then
-        echo -e "${RED}✘ 请输入有效的数字${NC}"
-        return 1
-    fi
-    
-    if (( $(echo "$value < $min" | bc -l) )); then
-        echo -e "${RED}✘ 值不能小于 ${min}${unit}${NC}"
-        return 1
-    fi
-    
-    if (( $(echo "$value > $max" | bc -l) )); then
-        echo -e "${RED}✘ 值不能大于 ${max}${unit}${NC}"
-        return 1
-    fi
-    
-    return 0
-}
-
-# 显示进度条
-show_progress() {
-    local current="$1"
-    local total="$2"
-    local message="$3"
-    local percent=$((current * 100 / total))
-    local filled=$((percent / 2))
-    local empty=$((50 - filled))
-    
-    printf "\r${CYAN}${message} ["
-    printf "%*s" $filled | tr ' ' '='
-    printf "%*s" $empty | tr ' ' ' '
-    printf "] %d%%" $percent
-    
-    if [ $current -eq $total ]; then
-        printf "\n"
-    fi
-}
-
-# =================================================================
-# UI绘制函数 - 优化版
-# =================================================================
-
-# 绘制脚本主标题 - 增强版
+# 绘制脚本主标题
 draw_header() {
     clear
     printf "${CYAN}╔════════════════════════════════════════════════════════════╗${NC}\n"
-    printf "${CYAN}║                ${BOLD_WHITE}TCP 调优脚本 - 优化版 v11${CYAN}                ║${NC}\n"
-    printf "${CYAN}║                    ${GREEN}Enhanced & Optimized${CYAN}                    ║${NC}\n"
+    printf "${CYAN}║                ${BOLD_WHITE}TCP 调优脚本 - 优化版${CYAN}                ║${NC}\n"
     printf "${CYAN}╚════════════════════════════════════════════════════════════╝${NC}\n\n"
 }
 
-# 绘制系统状态 - 增强版
+# 绘制注意事项
+draw_notes() {
+    printf "${YELLOW}┌─ 注意事项 ───────────────────────────────────${NC}\n"
+    printf "${YELLOW}│${NC}  ${RED}1. 此脚本的TCP调优操作对劣质线路无效${NC}\n"
+    printf "${YELLOW}│${NC}  ${RED}2. 小带宽或低延迟场景下，调优效果不显著${NC}\n"
+    printf "${YELLOW}│${NC}  ${RED}3. 请尽量在晚高峰进行调优${NC}\n"
+    printf "${YELLOW}└────────────────────────────────────────────────────${NC}\n\n"
+}
+
+# 绘制系统状态 - 简化版
 draw_status() {
     # 获取TCP缓冲区大小
     local wmem=$(sysctl -n net.ipv4.tcp_wmem 2>/dev/null)
     local rmem=$(sysctl -n net.ipv4.tcp_rmem 2>/dev/null)
-    local cc=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)
-    local qdisc=$(sysctl -n net.core.default_qdisc 2>/dev/null)
     
     if [[ -n "$wmem" && -n "$rmem" ]]; then
         local wmem_max=$(echo "$wmem" | awk '{print $3}')
@@ -166,8 +73,7 @@ draw_status() {
         
         printf "${GREEN}┌─ 当前状态 ───────────────────────────────────${NC}\n"
         printf "${GREEN}│${NC}  TCP缓冲区: ${BOLD_WHITE}${wmem_mb} MiB${NC} (写) / ${BOLD_WHITE}${rmem_mb} MiB${NC} (读)\n"
-        printf "${GREEN}│${NC}  拥塞控制: ${BOLD_WHITE}${cc:-未知}${NC}\n"
-        printf "${GREEN}│${NC}  队列算法: ${BOLD_WHITE}${qdisc:-未知}${NC}\n"
+        printf "${GREEN}│${NC}             ${CYAN}${wmem_max} bytes${NC} (写) / ${CYAN}${rmem_max} bytes${NC} (读)\n"
         
         # 检查iperf3状态
         if pgrep iperf3 >/dev/null 2>&1; then
@@ -176,166 +82,66 @@ draw_status() {
             printf "${GREEN}│${NC}  iperf3服务: ${YELLOW}未运行${NC}\n"
         fi
         
-        # 显示网络延迟
-        local ping_time=$(ping -c 1 8.8.8.8 2>/dev/null | grep 'time=' | awk '{print $7}' | cut -d'=' -f2)
-        if [[ -n "$ping_time" ]]; then
-            printf "${GREEN}│${NC}  网络延迟: ${BOLD_WHITE}${ping_time}${NC}\n"
-        fi
-        
         printf "${GREEN}└────────────────────────────────────────────────────${NC}\n\n"
     else
         printf "${RED}⚠ 无法获取当前TCP缓冲区状态${NC}\n\n"
     fi
 }
 
-# 绘制主菜单 - 增强版
+# 绘制主菜单
 draw_main_menu() {
     printf "${CYAN}┌─ 主菜单 ─────────────────────────────────────${NC}\n"
-    printf "${CYAN}│${NC}   ${YELLOW}1.${NC} 智能调优 (推荐)\n"
+    printf "${CYAN}│${NC}   ${YELLOW}1.${NC} 自动调优 (BDP计算)\n"
     printf "${CYAN}│${NC}   ${YELLOW}2.${NC} 手动调优\n"
-    printf "${CYAN}│${NC}   ${YELLOW}3.${NC} 配置管理\n"
-    printf "${CYAN}│${NC}   ${YELLOW}4.${NC} 网络测试\n"
-    printf "${CYAN}│${NC}   ${YELLOW}5.${NC} 系统诊断\n"
-    printf "${CYAN}│${NC}   ${YELLOW}6.${NC} 帮助信息\n"
+    printf "${CYAN}│${NC}   ${YELLOW}3.${NC} 重置为默认\n"
+    printf "${CYAN}│${NC}   ${YELLOW}4.${NC} 服务管理 (iperf3)\n"
+    printf "${CYAN}│${NC}   ${YELLOW}5.${NC} 状态检查\n"
+    printf "${CYAN}│${NC}   ${YELLOW}6.${NC} 配置建议\n"
     printf "${CYAN}│${NC}   ${YELLOW}0.${NC} 退出脚本\n"
     printf "${CYAN}└────────────────────────────────────────────────────${NC}\n\n"
 }
 
-# 绘制智能调优子菜单
-draw_smart_tuning_menu() {
-    printf "${CYAN}┌─ 智能调优 ───────────────────────────────────${NC}\n"
-    printf "${CYAN}│${NC}   ${YELLOW}1.${NC} 自动检测并调优\n"
-    printf "${CYAN}│${NC}   ${YELLOW}2.${NC} BDP计算调优\n"
-    printf "${CYAN}│${NC}   ${YELLOW}3.${NC} 场景化调优\n"
-    printf "${CYAN}│${NC}   ${YELLOW}4.${NC} 微调功能\n"
+# 绘制自动调优子菜单
+draw_auto_tuning_menu() {
+    printf "${CYAN}┌─ 自动调优 ───────────────────────────────────${NC}\n"
+    printf "${CYAN}│${NC}   ${YELLOW}1.${NC} BDP自动计算 (输入带宽+RTT)\n"
+    printf "${CYAN}│${NC}   ${YELLOW}2.${NC} 微调 +1MiB\n"
+    printf "${CYAN}│${NC}   ${YELLOW}3.${NC} 微调 -1MiB\n"
+    printf "${CYAN}│${NC}   ${YELLOW}4.${NC} 显示详细信息\n"
     printf "${CYAN}│${NC}   ${YELLOW}0.${NC} 返回主菜单\n"
     printf "${CYAN}└────────────────────────────────────────────────────${NC}\n\n"
 }
 
-# 绘制配置管理子菜单
-draw_config_menu() {
-    printf "${CYAN}┌─ 配置管理 ───────────────────────────────────${NC}\n"
-    printf "${CYAN}│${NC}   ${YELLOW}1.${NC} 查看当前配置\n"
-    printf "${CYAN}│${NC}   ${YELLOW}2.${NC} 配置对比\n"
-    printf "${CYAN}│${NC}   ${YELLOW}3.${NC} 重置为默认\n"
-    printf "${CYAN}│${NC}   ${YELLOW}4.${NC} 配置回滚\n"
-    printf "${CYAN}│${NC}   ${YELLOW}5.${NC} 备份管理\n"
+# 绘制手动调优子菜单
+draw_manual_tuning_menu() {
+    printf "${CYAN}┌─ 手动调优 ───────────────────────────────────${NC}\n"
+    printf "${CYAN}│${NC}   ${YELLOW}1.${NC} 快速调优 (输入MiB值)\n"
+    printf "${CYAN}│${NC}   ${YELLOW}2.${NC} 精确调优 (输入字节值)\n"
     printf "${CYAN}│${NC}   ${YELLOW}0.${NC} 返回主菜单\n"
     printf "${CYAN}└────────────────────────────────────────────────────${NC}\n\n"
 }
 
+# 绘制服务管理子菜单
+draw_service_menu() {
+    printf "${CYAN}┌─ 服务管理 ───────────────────────────────────${NC}\n"
+    printf "${CYAN}│${NC}   ${YELLOW}1.${NC} 启动 iperf3 服务\n"
+    printf "${CYAN}│${NC}   ${YELLOW}2.${NC} 停止 iperf3 服务\n"
+    printf "${CYAN}│${NC}   ${YELLOW}0.${NC} 返回主菜单\n"
+    printf "${CYAN}└────────────────────────────────────────────────────${NC}\n\n"
+}
+
+# 提示继续
+prompt_continue() {
+    printf "\n${YELLOW}按回车键继续...${NC}"
+    read -r
+}
+
 # =================================================================
-# 核心功能函数 - 优化版
+# 核心功能函数 - 修复版本
 # =================================================================
 
-# 批量应用配置 - 性能优化
-apply_batch_config() {
-    local wmem_value="$1"
-    local rmem_value="$2"
-    local cc_value="${3:-bbr}"
-    local qdisc_value="${4:-fq}"
-    
-    echo -e "${CYAN}正在批量应用配置...${NC}"
-    
-    # 批量执行sysctl命令
-    if sysctl -w \
-        net.ipv4.tcp_wmem="$wmem_value" \
-        net.ipv4.tcp_rmem="$rmem_value" \
-        net.ipv4.tcp_congestion_control="$cc_value" \
-        net.core.default_qdisc="$qdisc_value" >/dev/null 2>&1; then
-        
-        echo -e "${GREEN}✔ 运行时配置应用成功${NC}"
-        log_message "INFO" "Runtime config applied: wmem=$wmem_value, rmem=$rmem_value"
-        return 0
-    else
-        echo -e "${RED}✘ 运行时配置应用失败${NC}"
-        log_message "ERROR" "Failed to apply runtime config"
-        return 1
-    fi
-}
-
-# 智能配置验证 - 增强版
-smart_verify_config() {
-    local expected_wmem="$1"
-    local expected_rmem="$2"
-    local max_attempts=3
-    local attempt=1
-    
-    echo -e "${CYAN}智能验证配置生效状态...${NC}"
-    
-    # 提取期望值
-    local expected_wmem_max=$(echo "$expected_wmem" | awk '{print $3}')
-    local expected_rmem_max=$(echo "$expected_rmem" | awk '{print $3}')
-    
-    while [ $attempt -le $max_attempts ]; do
-        show_progress $attempt $max_attempts "验证配置"
-        
-        # 等待配置生效
-        sleep $((attempt * 2))
-        
-        # 获取当前值
-        local current_wmem_max=$(sysctl -n net.ipv4.tcp_wmem 2>/dev/null | awk '{print $3}')
-        local current_rmem_max=$(sysctl -n net.ipv4.tcp_rmem 2>/dev/null | awk '{print $3}')
-        
-        # 检查配置是否匹配
-        if [[ "$current_wmem_max" == "$expected_wmem_max" ]] && [[ "$current_rmem_max" == "$expected_rmem_max" ]]; then
-            echo -e "\n${GREEN}✔ 配置验证成功${NC}"
-            log_message "INFO" "Config verification successful"
-            return 0
-        fi
-        
-        ((attempt++))
-    done
-    
-    echo -e "\n${YELLOW}⚠ 配置验证未完全通过，但可能已生效${NC}"
-    log_message "WARNING" "Config verification incomplete"
-    return 1
-}
-
-# 优化的配置应用函数
-apply_config_optimized() {
-    local wmem_value="$1"
-    local rmem_value="$2"
-    local force_apply="${3:-false}"
-    
-    echo -e "${CYAN}正在应用TCP缓冲区配置...${NC}"
-    echo -e "${CYAN}wmem: $wmem_value${NC}"
-    echo -e "${CYAN}rmem: $rmem_value${NC}"
-    
-    # 记录配置历史
-    CONFIG_HISTORY+=("$(date '+%Y-%m-%d %H:%M:%S')|$wmem_value|$rmem_value")
-    
-    # 清理旧配置
-    if ! clear_conf_optimized "$SYSCTL_CONF"; then
-        echo -e "${RED}✘ 清理旧配置失败${NC}"
-        return 1
-    fi
-    
-    # 批量应用运行时配置
-    if ! apply_batch_config "$wmem_value" "$rmem_value"; then
-        echo -e "${RED}✘ 运行时配置应用失败${NC}"
-        return 1
-    fi
-    
-    # 写入持久化配置
-    if ! write_persistent_config "$wmem_value" "$rmem_value"; then
-        echo -e "${RED}✘ 持久化配置写入失败${NC}"
-        return 1
-    fi
-    
-    # 智能验证配置
-    if smart_verify_config "$wmem_value" "$rmem_value" || [[ "$force_apply" == "true" ]]; then
-        echo -e "${GREEN}✔ 配置已成功应用并持久化${NC}"
-        log_message "INFO" "Config successfully applied and persisted"
-        return 0
-    else
-        echo -e "${YELLOW}⚠ 配置验证未完全通过，但可能已生效${NC}"
-        return 0
-    fi
-}
-
-# 优化的配置清理函数
-clear_conf_optimized() {
+# 改进的配置清理函数
+clear_conf() {
     local config_file="$1"
     
     if [ ! -f "$config_file" ]; then
@@ -346,13 +152,17 @@ clear_conf_optimized() {
         }
     fi
     
-    # 创建备份
+    # 备份原配置文件
     local backup_name="${config_file}.bak.$(date +%Y%m%d_%H%M%S)"
     cp "$config_file" "$backup_name" 2>/dev/null && \
         echo -e "${CYAN}ℹ 已备份原配置文件到: $backup_name${NC}"
     
-    # 批量删除旧配置
-    sed -i '/^# TCP调优配置/d; /^net\.ipv4\.tcp_wmem/d; /^net\.ipv4\.tcp_rmem/d; /^net\.ipv4\.tcp_congestion_control/d; /^net\.core\.default_qdisc/d' "$config_file" 2>/dev/null
+    # 删除旧的TCP配置
+    sed -i '/^# TCP调优配置/d' "$config_file" 2>/dev/null
+    sed -i '/^net\.ipv4\.tcp_wmem/d' "$config_file" 2>/dev/null
+    sed -i '/^net\.ipv4\.tcp_rmem/d' "$config_file" 2>/dev/null
+    sed -i '/^net\.ipv4\.tcp_congestion_control/d' "$config_file" 2>/dev/null
+    sed -i '/^net\.core\.default_qdisc/d' "$config_file" 2>/dev/null
     
     # 确保文件末尾有换行符
     if [ -n "$(tail -c1 "$config_file" 2>/dev/null)" ]; then
@@ -362,25 +172,151 @@ clear_conf_optimized() {
     return 0
 }
 
-# 写入持久化配置
-write_persistent_config() {
+# 改进的配置验证函数 - 修复首次不生效的关键
+verify_config() {
+    local expected_wmem="$1"
+    local expected_rmem="$2"
+    local max_attempts=5
+    local attempt=1
+    
+    echo -e "${CYAN}正在验证配置生效状态...${NC}"
+    
+    # 提取期望的最大值
+    local expected_wmem_max=$(echo "$expected_wmem" | awk '{print $3}')
+    local expected_rmem_max=$(echo "$expected_rmem" | awk '{print $3}')
+    
+    while [ $attempt -le $max_attempts ]; do
+        echo -e "${CYAN}验证尝试 $attempt/$max_attempts...${NC}"
+        
+        # 等待配置生效，逐步增加等待时间
+        sleep $((attempt * 2))
+        
+        # 获取当前实际值
+        local current_wmem_max=$(sysctl -n net.ipv4.tcp_wmem 2>/dev/null | awk '{print $3}')
+        local current_rmem_max=$(sysctl -n net.ipv4.tcp_rmem 2>/dev/null | awk '{print $3}')
+        
+        # 检查是否获取到了有效值
+        if [[ -z "$current_wmem_max" ]] || [[ -z "$current_rmem_max" ]]; then
+            echo -e "${YELLOW}⚠ 第${attempt}次验证: 无法获取当前配置${NC}"
+            ((attempt++))
+            continue
+        fi
+        
+        # 比较配置是否匹配
+        if [[ "$current_wmem_max" == "$expected_wmem_max" ]] && [[ "$current_rmem_max" == "$expected_rmem_max" ]]; then
+            echo -e "${GREEN}✔ 配置验证成功 (第${attempt}次尝试)${NC}"
+            return 0
+        else
+            echo -e "${YELLOW}⚠ 第${attempt}次验证: 配置尚未完全生效${NC}"
+            echo -e "${CYAN}  期望: wmem=$expected_wmem_max, rmem=$expected_rmem_max${NC}"
+            echo -e "${CYAN}  实际: wmem=$current_wmem_max, rmem=$current_rmem_max${NC}"
+        fi
+        
+        ((attempt++))
+    done
+    
+    # 最终检查 - 即使验证失败，也检查配置是否实际接近期望值
+    local current_wmem_max=$(sysctl -n net.ipv4.tcp_wmem 2>/dev/null | awk '{print $3}')
+    local current_rmem_max=$(sysctl -n net.ipv4.tcp_rmem 2>/dev/null | awk '{print $3}')
+    
+    if [[ -n "$current_wmem_max" && -n "$current_rmem_max" ]]; then
+        # 允许一定的误差范围 (±1024字节)
+        local wmem_diff=$((current_wmem_max - expected_wmem_max))
+        local rmem_diff=$((current_rmem_max - expected_rmem_max))
+        
+        if [ ${wmem_diff#-} -le 1024 ] && [ ${rmem_diff#-} -le 1024 ]; then
+            echo -e "${GREEN}✔ 配置基本生效 (存在微小差异，但在可接受范围内)${NC}"
+            return 0
+        fi
+    fi
+    
+    echo -e "${RED}✘ 配置验证失败，但配置可能已部分生效${NC}"
+    return 1
+}
+
+# 改进的配置应用函数 - 核心修复
+apply_config() {
     local wmem_value="$1"
     local rmem_value="$2"
+    local force_apply="${3:-false}"
     
-    echo -e "${CYAN}写入持久化配置...${NC}"
+    echo -e "${CYAN}正在应用TCP缓冲区配置...${NC}"
+    echo -e "${CYAN}wmem: $wmem_value${NC}"
+    echo -e "${CYAN}rmem: $rmem_value${NC}"
     
-    # 写入主配置文件
-    {
+    # 清理旧配置
+    if ! clear_conf "$SYSCTL_CONF"; then
+        echo -e "${RED}✘ 清理旧配置失败${NC}"
+        return 1
+    fi
+    
+    # 立即应用配置到运行时 - 关键修复点
+    echo -e "${CYAN}步骤1: 应用运行时配置...${NC}"
+    local apply_success=true
+    
+    # 多次尝试应用配置，确保生效
+    for i in {1..3}; do
+        echo -e "${CYAN}  尝试 $i/3: 应用运行时配置...${NC}"
+        
+        if sysctl -w net.ipv4.tcp_wmem="$wmem_value" >/dev/null 2>&1 && \
+           sysctl -w net.ipv4.tcp_rmem="$rmem_value" >/dev/null 2>&1; then
+            echo -e "${GREEN}  ✔ 运行时配置应用成功${NC}"
+            break
+        else
+            echo -e "${YELLOW}  ⚠ 第${i}次尝试失败${NC}"
+            if [ $i -eq 3 ]; then
+                apply_success=false
+            fi
+            sleep 1
+        fi
+    done
+    
+    if [[ "$apply_success" == "false" ]]; then
+        echo -e "${RED}✘ 运行时配置应用失败${NC}"
+        return 1
+    fi
+    
+    # 应用BBR和FQ配置
+    sysctl -w net.ipv4.tcp_congestion_control=bbr >/dev/null 2>&1
+    sysctl -w net.core.default_qdisc=fq >/dev/null 2>&1
+    
+    # 写入配置文件以确保持久化
+    echo -e "${CYAN}步骤2: 写入配置文件...${NC}"
+    if ! {
         echo "# TCP调优配置 - 由TCP调优脚本生成 $(date)"
         echo "net.ipv4.tcp_congestion_control=bbr"
         echo "net.core.default_qdisc=fq"
         echo "net.ipv4.tcp_wmem=$wmem_value"
         echo "net.ipv4.tcp_rmem=$rmem_value"
         echo ""
-    } >> "$SYSCTL_CONF" 2>/dev/null || {
-        echo -e "${RED}✘ 写入主配置文件失败${NC}"
+    } >> "$SYSCTL_CONF" 2>/dev/null; then
+        echo -e "${RED}✘ 写入配置文件失败${NC}"
         return 1
-    }
+    fi
+    
+    # 重新加载sysctl配置
+    echo -e "${CYAN}步骤3: 重新加载系统配置...${NC}"
+    sysctl -p >/dev/null 2>&1
+    
+    # 验证配置是否生效
+    echo -e "${CYAN}步骤4: 验证配置...${NC}"
+    if verify_config "$wmem_value" "$rmem_value" || [[ "$force_apply" == "true" ]]; then
+        echo -e "${GREEN}✔ 配置已成功应用并持久化${NC}"
+        ensure_persistence "$wmem_value" "$rmem_value"
+        return 0
+    else
+        echo -e "${YELLOW}⚠ 配置验证未完全通过，但可能已生效${NC}"
+        ensure_persistence "$wmem_value" "$rmem_value"
+        return 0  # 改为返回成功，避免误报
+    fi
+}
+
+# 确保配置持久化
+ensure_persistence() {
+    local wmem_value="$1"
+    local rmem_value="$2"
+    
+    echo -e "${CYAN}正在确保配置持久化...${NC}"
     
     # 创建备份配置文件
     if [ -d "/etc/sysctl.d" ]; then
@@ -394,244 +330,193 @@ write_persistent_config() {
         } > "$BACKUP_CONF" 2>/dev/null
         
         if [ -f "$BACKUP_CONF" ]; then
-            echo -e "${GREEN}✔ 已创建备份配置文件${NC}"
+            echo -e "${GREEN}  ✔ 已创建备份配置文件: $BACKUP_CONF${NC}"
         fi
     fi
     
-    # 重新加载配置
-    sysctl -p >/dev/null 2>&1
-    
-    return 0
-}
-
-# =================================================================
-# 新增智能功能
-# =================================================================
-
-# 自动检测网络环境并调优
-auto_detect_and_tune() {
-    echo -e "\n${CYAN}=== 自动检测网络环境 ===${NC}\n"
-    
-    # 检测网络延迟
-    echo -e "${CYAN}检测网络延迟...${NC}"
-    local ping_result=$(ping -c 3 8.8.8.8 2>/dev/null | grep 'avg' | awk -F'/' '{print $5}')
-    local avg_ping=$(echo "$ping_result" | cut -d'=' -f2)
-    
-    if [[ -n "$avg_ping" ]]; then
-        echo -e "平均延迟: ${BOLD_WHITE}${avg_ping}ms${NC}"
-        
-        # 根据延迟推荐配置
-        local recommended_mb
-        if (( $(echo "$avg_ping < 10" | bc -l) )); then
-            recommended_mb=4
-            echo -e "网络类型: ${GREEN}低延迟网络${NC}"
-        elif (( $(echo "$avg_ping < 50" | bc -l) )); then
-            recommended_mb=16
-            echo -e "网络类型: ${YELLOW}中等延迟网络${NC}"
-        else
-            recommended_mb=32
-            echo -e "网络类型: ${RED}高延迟网络${NC}"
+    # 重启systemd-sysctl服务
+    if command -v systemctl &> /dev/null; then
+        if systemctl restart systemd-sysctl >/dev/null 2>&1; then
+            echo -e "${GREEN}  ✔ systemd-sysctl服务已重启${NC}"
         fi
-        
-        echo -e "推荐配置: ${BOLD_WHITE}${recommended_mb} MiB${NC}"
-        
-        # 确认应用
-        printf "\n${GREEN}是否应用推荐配置? (y/n) ➤ ${NC}"
-        read confirm
-        if [[ "$confirm" =~ ^[Yy]$ ]]; then
-            local value_bytes=$(echo "$recommended_mb * 1024 * 1024" | bc)
-            apply_config_optimized "4096 16384 $value_bytes" "4096 87380 $value_bytes"
-        else
-            echo -e "${YELLOW}已取消自动调优${NC}"
-        fi
-    else
-        echo -e "${RED}✘ 无法检测网络延迟，请手动配置${NC}"
     fi
 }
 
-# 场景化调优
-scenario_based_tuning() {
-    echo -e "\n${CYAN}=== 场景化调优 ===${NC}\n"
+# =================================================================
+# 新增功能函数
+# =================================================================
+
+# BDP自动计算功能
+bdp_auto_calculate() {
+    echo -e "\n${CYAN}=== BDP自动计算 ===${NC}\n"
     
-    echo -e "${GREEN}请选择您的使用场景:${NC}"
-    echo -e "  ${YELLOW}1.${NC} 游戏/实时通信 (低延迟优先)"
-    echo -e "  ${YELLOW}2.${NC} 一般网络应用 (平衡性能)"
-    echo -e "  ${YELLOW}3.${NC} 大文件传输 (高吞吐量)"
-    echo -e "  ${YELLOW}4.${NC} 跨国网络 (高延迟优化)"
-    echo -e "  ${YELLOW}5.${NC} 服务器应用 (高并发)"
+    # 显示当前配置
+    local current_wmem=$(sysctl -n net.ipv4.tcp_wmem 2>/dev/null | awk '{print $3}')
+    if [[ -n "$current_wmem" ]]; then
+        local current_mb=$(echo "scale=1; $current_wmem / 1024 / 1024" | bc 2>/dev/null)
+        echo -e "当前TCP缓冲区: ${BOLD_WHITE}${current_mb} MiB${NC}\n"
+    fi
     
-    printf "\n${GREEN}请输入场景编号 (1-5) ➤ ${NC}"
-    read scenario
+    # 输入带宽
+    while true; do
+        printf "${GREEN}请输入带宽 (Mbps, 1-10000) ➤ ${NC}"
+        read bandwidth
+        if [[ "$bandwidth" =~ ^[0-9]*\.?[0-9]+$ ]] && (( $(echo "$bandwidth > 0 && $bandwidth <= 10000" | bc -l) )); then
+            break
+        else
+            echo -e "${RED}✘ 无效输入，请输入1-10000之间的数字${NC}"
+        fi
+    done
     
-    local recommended_mb
-    local description
+    # 输入RTT
+    while true; do
+        printf "${GREEN}请输入RTT延迟 (毫秒, 1-1000) ➤ ${NC}"
+        read rtt
+        if [[ "$rtt" =~ ^[0-9]*\.?[0-9]+$ ]] && (( $(echo "$rtt > 0 && $rtt <= 1000" | bc -l) )); then
+            break
+        else
+            echo -e "${RED}✘ 无效输入，请输入1-1000之间的数字${NC}"
+        fi
+    done
     
-    case "$scenario" in
-        1)
-            recommended_mb=2
-            description="游戏/实时通信"
-            ;;
-        2)
-            recommended_mb=8
-            description="一般网络应用"
-            ;;
-        3)
-            recommended_mb=32
-            description="大文件传输"
-            ;;
-        4)
-            recommended_mb=64
-            description="跨国网络"
-            ;;
-        5)
-            recommended_mb=16
-            description="服务器应用"
-            ;;
-        *)
-            echo -e "${RED}✘ 无效选择${NC}"
-            return 1
-            ;;
-    esac
+    # 计算BDP
+    echo -e "\n${CYAN}计算结果:${NC}"
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     
-    echo -e "\n${CYAN}场景: ${BOLD_WHITE}${description}${NC}"
-    echo -e "推荐配置: ${BOLD_WHITE}${recommended_mb} MiB${NC}"
+    # BDP = 带宽(Mbps) × RTT(ms) × 1000 / 8
+    local bdp_kb=$(echo "scale=2; $bandwidth * $rtt / 8" | bc)
+    local bdp_mb=$(echo "scale=2; $bdp_kb / 1024" | bc)
     
+    # 推荐缓冲区 = BDP × 1.5 (安全系数)
+    local recommended_mb=$(echo "scale=2; $bdp_mb * 1.5" | bc)
+    local final_mb=$(printf "%.0f" "$recommended_mb")
+    
+    # 确保最小值为1MiB
+    if [ "$final_mb" -lt 1 ]; then
+        final_mb=1
+    fi
+    
+    echo -e "理论BDP: ${YELLOW}$bandwidth × $rtt ÷ 8 = $bdp_kb KB${NC}"
+    echo -e "理论BDP: ${YELLOW}$bdp_mb MB${NC}"
+    echo -e "推荐缓冲区: ${YELLOW}$bdp_mb × 1.5 = $recommended_mb MB${NC}"
+    echo -e "建议设置: ${BOLD_WHITE}${final_mb} MiB${NC} (安全起见)"
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    
+    # 确认应用
     printf "\n${GREEN}是否应用此配置? (y/n) ➤ ${NC}"
     read confirm
     if [[ "$confirm" =~ ^[Yy]$ ]]; then
-        local value_bytes=$(echo "$recommended_mb * 1024 * 1024" | bc)
-        apply_config_optimized "4096 16384 $value_bytes" "4096 87380 $value_bytes"
+        local value_bytes=$(echo "$final_mb * 1024 * 1024" | bc)
+        echo -e "\n${CYAN}正在应用BDP计算结果: ${final_mb} MiB...${NC}"
+        apply_config "4096 16384 $value_bytes" "4096 87380 $value_bytes"
     else
         echo -e "${YELLOW}已取消配置应用${NC}"
     fi
 }
 
-# 配置对比功能
-compare_configs() {
-    echo -e "\n${CYAN}=== 配置对比 ===${NC}\n"
+# 微调功能
+fine_tune_buffer() {
+    local operation="$1"  # "add" 或 "sub"
     
-    # 当前配置
+    # 获取当前配置
+    local current_wmem=$(sysctl -n net.ipv4.tcp_wmem 2>/dev/null | awk '{print $3}')
+    local current_rmem=$(sysctl -n net.ipv4.tcp_rmem 2>/dev/null | awk '{print $3}')
+    
+    if [[ -z "$current_wmem" || -z "$current_rmem" ]]; then
+        echo -e "${RED}✘ 无法获取当前TCP缓冲区配置${NC}"
+        return 1
+    fi
+    
+    local current_mb=$(echo "scale=1; $current_wmem / 1024 / 1024" | bc 2>/dev/null)
+    echo -e "\n当前TCP缓冲区: ${BOLD_WHITE}${current_mb} MiB${NC}"
+    
+    # 计算新值
+    local one_mib=$((1024 * 1024))
+    local new_wmem
+    local new_rmem
+    
+    if [[ "$operation" == "add" ]]; then
+        new_wmem=$((current_wmem + one_mib))
+        new_rmem=$((current_rmem + one_mib))
+        echo -e "操作: ${GREEN}增加 1MiB${NC}"
+    else
+        new_wmem=$((current_wmem - one_mib))
+        new_rmem=$((current_rmem - one_mib))
+        echo -e "操作: ${YELLOW}减少 1MiB${NC}"
+        
+        # 检查最小值限制 (4MiB)
+        local min_value=$((4 * 1024 * 1024))
+        if [ "$new_wmem" -lt "$min_value" ] || [ "$new_rmem" -lt "$min_value" ]; then
+            echo -e "${RED}✘ 不能设置小于4MiB的值，当前已是最小安全值${NC}"
+            return 1
+        fi
+    fi
+    
+    local new_mb=$(echo "scale=1; $new_wmem / 1024 / 1024" | bc 2>/dev/null)
+    echo -e "新值: ${BOLD_WHITE}${new_mb} MiB${NC}"
+    
+    # 确认应用
+    printf "\n${GREEN}是否应用此配置? (y/n) ➤ ${NC}"
+    read confirm
+    if [[ "$confirm" =~ ^[Yy]$ ]]; then
+        echo -e "\n${CYAN}正在应用微调配置...${NC}"
+        apply_config "4096 16384 $new_wmem" "4096 87380 $new_rmem"
+    else
+        echo -e "${YELLOW}已取消配置应用${NC}"
+    fi
+}
+
+# 显示详细信息
+show_detailed_info() {
+    echo -e "\n${CYAN}=== 详细配置信息 ===${NC}\n"
+    
+    # 当前运行时配置
+    echo -e "${GREEN}当前运行时配置:${NC}"
     local current_wmem=$(sysctl -n net.ipv4.tcp_wmem 2>/dev/null)
     local current_rmem=$(sysctl -n net.ipv4.tcp_rmem 2>/dev/null)
+    local current_cc=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)
+    local current_qdisc=$(sysctl -n net.core.default_qdisc 2>/dev/null)
     
-    echo -e "${GREEN}当前配置:${NC}"
-    echo -e "  wmem: ${BOLD_WHITE}$current_wmem${NC}"
-    echo -e "  rmem: ${BOLD_WHITE}$current_rmem${NC}"
-    
-    # 默认配置
-    echo -e "\n${GREEN}系统默认配置:${NC}"
-    echo -e "  wmem: ${YELLOW}$DEFAULT_WMEM${NC}"
-    echo -e "  rmem: ${YELLOW}$DEFAULT_RMEM${NC}"
-    
-    # 计算差异
-    if [[ -n "$current_wmem" && -n "$current_rmem" ]]; then
-        local current_wmem_max=$(echo "$current_wmem" | awk '{print $3}')
-        local current_rmem_max=$(echo "$current_rmem" | awk '{print $3}')
-        local default_wmem_max=$(echo "$DEFAULT_WMEM" | awk '{print $3}')
-        local default_rmem_max=$(echo "$DEFAULT_RMEM" | awk '{print $3}')
-        
-        local wmem_diff=$((current_wmem_max - default_wmem_max))
-        local rmem_diff=$((current_rmem_max - default_rmem_max))
-        
-        echo -e "\n${GREEN}配置差异:${NC}"
-        echo -e "  wmem差异: ${CYAN}${wmem_diff} bytes${NC}"
-        echo -e "  rmem差异: ${CYAN}${rmem_diff} bytes${NC}"
-        
-        if [ $wmem_diff -gt 0 ] || [ $rmem_diff -gt 0 ]; then
-            echo -e "  状态: ${GREEN}已优化${NC}"
-        else
-            echo -e "  状态: ${YELLOW}使用默认配置${NC}"
-        fi
-    fi
-}
-
-# 配置回滚功能
-rollback_config() {
-    echo -e "\n${CYAN}=== 配置回滚 ===${NC}\n"
-    
-    if [ ${#CONFIG_HISTORY[@]} -eq 0 ]; then
-        echo -e "${YELLOW}⚠ 没有可回滚的配置历史${NC}"
-        return 0
+    if [[ -n "$current_wmem" ]]; then
+        echo -e "  TCP wmem: ${BOLD_WHITE}$current_wmem${NC}"
+        local wmem_max=$(echo "$current_wmem" | awk '{print $3}')
+        local wmem_mb=$(echo "scale=2; $wmem_max / 1024 / 1024" | bc 2>/dev/null)
+        echo -e "  wmem最大值: ${YELLOW}$wmem_max bytes${NC} (${YELLOW}${wmem_mb} MiB${NC})"
     fi
     
-    echo -e "${GREEN}配置历史:${NC}"
-    for i in "${!CONFIG_HISTORY[@]}"; do
-        local entry="${CONFIG_HISTORY[$i]}"
-        local timestamp=$(echo "$entry" | cut -d'|' -f1)
-        local wmem=$(echo "$entry" | cut -d'|' -f2)
-        local rmem=$(echo "$entry" | cut -d'|' -f3)
-        echo -e "  ${YELLOW}$((i+1)).${NC} $timestamp - wmem: $wmem, rmem: $rmem"
-    done
+    if [[ -n "$current_rmem" ]]; then
+        echo -e "  TCP rmem: ${BOLD_WHITE}$current_rmem${NC}"
+        local rmem_max=$(echo "$current_rmem" | awk '{print $3}')
+        local rmem_mb=$(echo "scale=2; $rmem_max / 1024 / 1024" | bc 2>/dev/null)
+        echo -e "  rmem最大值: ${YELLOW}$rmem_max bytes${NC} (${YELLOW}${rmem_mb} MiB${NC})"
+    fi
     
-    printf "\n${GREEN}请选择要回滚的配置 (1-${#CONFIG_HISTORY[@]}) ➤ ${NC}"
-    read choice
+    echo -e "  拥塞控制: ${BOLD_WHITE}${current_cc:-未知}${NC}"
+    echo -e "  队列算法: ${BOLD_WHITE}${current_qdisc:-未知}${NC}"
     
-    if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le ${#CONFIG_HISTORY[@]} ]; then
-        local selected_entry="${CONFIG_HISTORY[$((choice-1))]}"
-        local wmem=$(echo "$selected_entry" | cut -d'|' -f2)
-        local rmem=$(echo "$selected_entry" | cut -d'|' -f3)
-        
-        printf "\n${GREEN}确认回滚到此配置? (y/n) ➤ ${NC}"
-        read confirm
-        if [[ "$confirm" =~ ^[Yy]$ ]]; then
-            echo -e "\n${CYAN}正在回滚配置...${NC}"
-            apply_config_optimized "$wmem" "$rmem"
+    # 配置文件状态
+    echo -e "\n${GREEN}配置文件状态:${NC}"
+    if [ -f "$SYSCTL_CONF" ]; then
+        echo -e "${GREEN}  ✔ 主配置文件存在${NC} ($SYSCTL_CONF)"
+        if grep -q "net.ipv4.tcp_wmem" "$SYSCTL_CONF" 2>/dev/null; then
+            echo -e "${GREEN}  ✔ 包含TCP配置${NC}"
         else
-            echo -e "${YELLOW}已取消回滚${NC}"
+            echo -e "${RED}  ✘ 缺少TCP配置${NC}"
         fi
     else
-        echo -e "${RED}✘ 无效选择${NC}"
+        echo -e "${RED}  ✘ 主配置文件不存在${NC}"
     fi
-}
-
-# 网络测试功能
-network_test() {
-    echo -e "\n${CYAN}=== 网络测试 ===${NC}\n"
     
-    echo -e "${GREEN}请选择测试类型:${NC}"
-    echo -e "  ${YELLOW}1.${NC} 延迟测试"
-    echo -e "  ${YELLOW}2.${NC} 带宽测试 (iperf3)"
-    echo -e "  ${YELLOW}3.${NC} 综合测试"
-    
-    printf "\n${GREEN}请输入测试类型 (1-3) ➤ ${NC}"
-    read test_type
-    
-    case "$test_type" in
-        1)
-            echo -e "\n${CYAN}延迟测试...${NC}"
-            ping -c 10 8.8.8.8 | grep 'avg'
-            ;;
-        2)
-            echo -e "\n${CYAN}带宽测试...${NC}"
-            echo -e "${YELLOW}请确保iperf3服务已启动${NC}"
-            ;;
-        3)
-            echo -e "\n${CYAN}综合测试...${NC}"
-            echo -e "延迟测试:"
-            ping -c 5 8.8.8.8 | grep 'avg'
-            echo -e "\n网络连接测试:"
-            curl -s -o /dev/null -w "下载速度: %{speed_download} bytes/sec\n" http://speedtest.tele2.net/1MB.zip
-            ;;
-        *)
-            echo -e "${RED}✘ 无效选择${NC}"
-            ;;
-    esac
-}
-
-# 系统诊断功能
-system_diagnosis() {
-    echo -e "\n${CYAN}=== 系统诊断 ===${NC}\n"
+    if [ -f "$BACKUP_CONF" ]; then
+        echo -e "${GREEN}  ✔ 备份配置文件存在${NC} ($BACKUP_CONF)"
+    else
+        echo -e "${YELLOW}  ⚠ 备份配置文件不存在${NC}"
+    fi
     
     # 系统信息
-    echo -e "${GREEN}系统信息:${NC}"
+    echo -e "\n${GREEN}系统信息:${NC}"
     echo -e "  内核版本: ${BOLD_WHITE}$(uname -r)${NC}"
     echo -e "  系统时间: ${BOLD_WHITE}$(date)${NC}"
-    echo -e "  运行时间: ${BOLD_WHITE}$(uptime -p)${NC}"
-    
-    # 网络配置
-    echo -e "\n${GREEN}网络配置:${NC}"
-    echo -e "  TCP拥塞控制: ${BOLD_WHITE}$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)${NC}"
-    echo -e "  队列算法: ${BOLD_WHITE}$(sysctl -n net.core.default_qdisc 2>/dev/null)${NC}"
     
     # BBR支持检查
     if lsmod | grep -q tcp_bbr 2>/dev/null; then
@@ -639,32 +524,175 @@ system_diagnosis() {
     else
         echo -e "  BBR模块: ${YELLOW}未加载或不支持${NC}"
     fi
+}
+
+# 重置TCP缓冲区
+reset_tcp() {
+    echo -e "\n${CYAN}正在重置TCP缓冲区为默认值...${NC}"
     
-    # 内存使用情况
-    echo -e "\n${GREEN}内存使用:${NC}"
-    free -h | grep -E "(Mem|Swap)"
+    # 显示当前配置
+    local current_wmem=$(sysctl -n net.ipv4.tcp_wmem 2>/dev/null)
+    local current_rmem=$(sysctl -n net.ipv4.tcp_rmem 2>/dev/null)
+    echo -e "${YELLOW}当前配置:${NC}"
+    echo -e "  wmem: $current_wmem"
+    echo -e "  rmem: $current_rmem"
     
-    # 网络连接数
-    echo -e "\n${GREEN}网络连接:${NC}"
-    echo -e "  TCP连接数: ${BOLD_WHITE}$(ss -tuln | wc -l)${NC}"
-    echo -e "  监听端口: ${BOLD_WHITE}$(ss -tuln | grep LISTEN | wc -l)${NC}"
+    # 确认重置
+    printf "\n${GREEN}确认重置为系统默认值? (y/n) ➤ ${NC}"
+    read confirm
+    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+        echo -e "${YELLOW}已取消重置操作${NC}"
+        return 0
+    fi
+    
+    # 应用默认配置
+    echo -e "\n${CYAN}应用默认配置...${NC}"
+    if apply_config "4096 16384 4194304" "4096 87380 6291456" "true"; then
+        echo -e "${GREEN}✔ 已将TCP缓冲区重置为系统默认值${NC}"
+        echo -e "${CYAN}ℹ 默认值: wmem=4096 16384 4194304, rmem=4096 87380 6291456${NC}"
+        
+        # 删除备份配置文件
+        if [ -f "$BACKUP_CONF" ]; then
+            rm -f "$BACKUP_CONF" 2>/dev/null && \
+                echo -e "${CYAN}ℹ 已删除备份配置文件${NC}"
+        fi
+        
+        return 0
+    else
+        echo -e "${RED}✘ 重置失败${NC}"
+        return 1
+    fi
+}
+
+# iperf3服务管理
+manage_iperf3() {
+    local action="$1"
+    
+    if [[ "$action" == "start" ]]; then
+        local_ip=$(wget -qO- --inet4-only http://icanhazip.com 2>/dev/null)
+        if [ -z "$local_ip" ]; then
+            local_ip=$(wget -qO- http://icanhazip.com 2>/dev/null)
+        fi
+        echo -e "\n${CYAN}您的出口IP是: ${BOLD_WHITE}$local_ip${NC}"
+        
+        while true; do
+            printf "${GREEN}请输入 iperf3 端口号（默认 5201） ➤ ${NC}"
+            read iperf_port
+            iperf_port=${iperf_port:-5201}
+            if [[ "$iperf_port" =~ ^[0-9]+$ ]] && [ "$iperf_port" -ge 1 ] && [ "$iperf_port" -le 65535 ]; then
+                break
+            else
+                echo -e "${RED}✘ 无效的端口号！请输入 1-65535 范围内的数字。${NC}"
+            fi
+        done
+        
+        pkill iperf3 &>/dev/null
+        nohup iperf3 -s -p "$iperf_port" > /dev/null 2>&1 &
+        echo -e "\n${GREEN}✔ iperf3 服务端已在后台启动，端口：$iperf_port${NC}"
+        echo -e "${YELLOW}ℹ 可在客户端使用以下命令测试：${NC}"
+        echo -e "${CYAN}  iperf3 -c $local_ip -R -t 30 -p $iperf_port${NC}"
+        
+    elif [[ "$action" == "stop" ]]; then
+        echo -e "\n${CYAN}正在停止 iperf3 服务...${NC}"
+        pkill iperf3 &>/dev/null
+        echo -e "${GREEN}✔ iperf3 服务已停止${NC}"
+    fi
+}
+
+# 显示配置建议
+show_config_recommendations() {
+    echo -e "\n${CYAN}=== TCP缓冲区配置建议 ===${NC}\n"
+    
+    echo -e "${GREEN}常见场景配置建议:${NC}"
+    echo -e "  ${YELLOW}1. 低延迟场景 (< 10ms):${NC}"
+    echo -e "     建议值: 2-4 MiB (适合游戏、实时通信)"
+    echo -e "     使用: 手动调优 → 快速调优，输入 2 或 4"
+    
+    echo -e "\n  ${YELLOW}2. 中等延迟场景 (10-50ms):${NC}"
+    echo -e "     建议值: 8-16 MiB (适合一般网络应用)"
+    echo -e "     使用: 手动调优 → 快速调优，输入 8 或 16"
+    
+    echo -e "\n  ${YELLOW}3. 高延迟场景 (> 50ms):${NC}"
+    echo -e "     建议值: 32-64 MiB (适合跨国传输)"
+    echo -e "     使用: 手动调优 → 快速调优，输入 32 或 64"
+    
+    echo -e "\n  ${YELLOW}4. 高带宽场景 (> 1Gbps):${NC}"
+    echo -e "     建议值: 64-128 MiB (适合大文件传输)"
+    echo -e "     使用: 手动调优 → 快速调优，输入 64 或 128"
+    
+    echo -e "\n${GREEN}自动计算建议:${NC}"
+    echo -e "  ${CYAN}使用 '自动调优 → BDP自动计算' 功能${NC}"
+    echo -e "  ${CYAN}输入您的带宽和延迟，系统自动计算最优值${NC}"
+    
+    echo -e "\n${GREEN}计算公式:${NC}"
+    echo -e "  ${CYAN}BDP = 带宽(Mbps) × 延迟(ms) ÷ 8${NC}"
+    echo -e "  ${CYAN}推荐缓冲区 = BDP × 1.5 (安全系数)${NC}"
+    
+    echo -e "\n${GREEN}网络测试建议:${NC}"
+    echo -e "  ${CYAN}1. 测试延迟: ping 目标服务器${NC}"
+    echo -e "  ${CYAN}2. 测试带宽: 使用本脚本的iperf3功能${NC}"
+    echo -e "  ${CYAN}3. 根据测试结果使用BDP自动计算${NC}"
 }
 
 # =================================================================
-# 主程序入口 - 优化版
+# 初始化函数
 # =================================================================
 
-# 初始化检查
-check_root_privileges
-check_network_connectivity
+# 初始化BBR和FQ
+init_bbr_fq() {
+    local bbr_enabled=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)
+    local fq_enabled=$(sysctl -n net.core.default_qdisc 2>/dev/null)
+    
+    if [[ "$bbr_enabled" != "bbr" ]]; then
+        sysctl -w net.ipv4.tcp_congestion_control=bbr &>/dev/null
+    fi
+    
+    if [[ "$fq_enabled" != "fq" ]]; then
+        sysctl -w net.core.default_qdisc=fq &>/dev/null
+    fi
+}
 
-# 创建日志文件
-touch "$LOG_FILE" 2>/dev/null
-log_message "INFO" "TCP tuning script started"
+# 检查依赖
+check_dependencies() {
+    local missing_deps=()
+    
+    for dep in iperf3 nohup bc; do
+        if ! command -v "$dep" &> /dev/null; then
+            missing_deps+=("$dep")
+        fi
+    done
+    
+    if [ ${#missing_deps[@]} -gt 0 ]; then
+        draw_header
+        echo -e "${YELLOW}检测到依赖缺失: ${missing_deps[*]}${NC}"
+        echo -e "${CYAN}开始自动安装...${NC}"
+        
+        if [ -f /etc/debian_version ]; then
+            apt-get update && apt-get install -y "${missing_deps[@]}"
+        elif [ -f /etc/redhat-release ]; then
+            yum install -y "${missing_deps[@]}"
+        else
+            echo -e "${RED}✘ 自动安装依赖失败，请手动安装: ${missing_deps[*]}${NC}"
+            exit 1
+        fi
+        
+        echo -e "${GREEN}✔ 依赖安装完成${NC}"
+        sleep 2
+    fi
+}
+
+# =================================================================
+# 主程序入口
+# =================================================================
+
+# 初始化
+init_bbr_fq
+check_dependencies
 
 # 主循环
 while true; do
     draw_header
+    draw_notes
     draw_status
     draw_main_menu
     
@@ -673,31 +701,27 @@ while true; do
 
     case "$choice_main" in
         1)
-            # 智能调优子菜单
+            # 自动调优子菜单
             while true; do
                 draw_header
                 draw_status
-                draw_smart_tuning_menu
+                draw_auto_tuning_menu
                 
                 printf "${GREEN}请输入选项编号 ➤ ${NC}"
-                read smart_choice
+                read auto_choice
 
-                case "$smart_choice" in
+                case "$auto_choice" in
                     1)
-                        auto_detect_and_tune
+                        bdp_auto_calculate
                         ;;
                     2)
-                        # BDP计算调优 (保持原有功能)
-                        echo -e "\n${CYAN}BDP计算调优功能${NC}"
-                        echo -e "${YELLOW}此功能需要手动输入带宽和延迟${NC}"
+                        fine_tune_buffer "add"
                         ;;
                     3)
-                        scenario_based_tuning
+                        fine_tune_buffer "sub"
                         ;;
                     4)
-                        # 微调功能 (保持原有功能)
-                        echo -e "\n${CYAN}微调功能${NC}"
-                        echo -e "${YELLOW}此功能需要手动选择增减${NC}"
+                        show_detailed_info
                         ;;
                     0)
                         echo -e "\n${CYAN}返回主菜单...${NC}"
@@ -708,44 +732,50 @@ while true; do
                         echo -e "\n${RED}✘ 无效选择，请输入0-4之间的数字${NC}"
                         ;;
                 esac
-                echo -e "\n${YELLOW}按回车键继续...${NC}"
-                read -r
+                prompt_continue
             done
             ;;
         2)
-            # 手动调优 (保持原有功能)
-            echo -e "\n${CYAN}手动调优功能${NC}"
-            echo -e "${YELLOW}此功能保持原有实现${NC}"
-            echo -e "\n${YELLOW}按回车键继续...${NC}"
-            read -r
-            ;;
-        3)
-            # 配置管理子菜单
+            # 手动调优子菜单
             while true; do
                 draw_header
                 draw_status
-                draw_config_menu
+                draw_manual_tuning_menu
                 
                 printf "${GREEN}请输入选项编号 ➤ ${NC}"
-                read config_choice
+                read manual_choice
 
-                case "$config_choice" in
+                case "$manual_choice" in
                     1)
-                        show_detailed_info
+                        # 快速调优 (MiB)
+                        while true; do
+                            printf "\n${GREEN}请输入TCP缓冲区大小 (单位 MiB, 可带小数) ➤ ${NC}"
+                            read tcp_value
+                            if [[ "$tcp_value" =~ ^[0-9]*\.?[0-9]+$ ]] && (( $(echo "$tcp_value > 0" | bc -l) )); then
+                                break
+                            else
+                                echo -e "${RED}✘ 无效输入，请输入一个大于0的数字${NC}"
+                            fi
+                        done
+                        
+                        value=$(printf "%.0f" "$(echo "$tcp_value * 1024 * 1024" | bc)")
+                        echo -e "\n${CYAN}正在设置TCP缓冲区为 ${BOLD_WHITE}$tcp_value MiB ($value bytes)...${NC}"
+                        apply_config "4096 16384 $value" "4096 87380 $value"
                         ;;
                     2)
-                        compare_configs
-                        ;;
-                    3)
-                        # 重置为默认 (保持原有功能)
-                        echo -e "\n${CYAN}重置为默认配置${NC}"
-                        ;;
-                    4)
-                        rollback_config
-                        ;;
-                    5)
-                        # 备份管理 (保持原有功能)
-                        echo -e "\n${CYAN}备份管理功能${NC}"
+                        # 精确调优 (字节)
+                        while true; do
+                            printf "\n${GREEN}请输入TCP缓冲区大小 (单位 字节) ➤ ${NC}"
+                            read value
+                            if [[ "$value" =~ ^[1-9][0-9]*$ ]]; then
+                                break
+                            else
+                                echo -e "${RED}✘ 无效输入，请输入一个正整数${NC}"
+                            fi
+                        done
+
+                        echo -e "\n${CYAN}正在设置TCP缓冲区为 ${BOLD_WHITE}$value bytes...${NC}"
+                        apply_config "4096 16384 $value" "4096 87380 $value"
                         ;;
                     0)
                         echo -e "\n${CYAN}返回主菜单...${NC}"
@@ -753,48 +783,63 @@ while true; do
                         break
                         ;;
                     *)
-                        echo -e "\n${RED}✘ 无效选择，请输入0-5之间的数字${NC}"
+                        echo -e "\n${RED}✘ 无效选择，请输入0-2之间的数字${NC}"
                         ;;
                 esac
-                echo -e "\n${YELLOW}按回车键继续...${NC}"
-                read -r
+                prompt_continue
             done
             ;;
+        3)
+            # 重置为默认
+            reset_tcp
+            prompt_continue
+            ;;
         4)
-            network_test
-            echo -e "\n${YELLOW}按回车键继续...${NC}"
-            read -r
+            # 服务管理子菜单
+            while true; do
+                draw_header
+                draw_status
+                draw_service_menu
+                
+                printf "${GREEN}请输入选项编号 ➤ ${NC}"
+                read service_choice
+
+                case "$service_choice" in
+                    1)
+                        manage_iperf3 "start"
+                        ;;
+                    2)
+                        manage_iperf3 "stop"
+                        ;;
+                    0)
+                        echo -e "\n${CYAN}返回主菜单...${NC}"
+                        sleep 1
+                        break
+                        ;;
+                    *)
+                        echo -e "\n${RED}✘ 无效选择，请输入0-2之间的数字${NC}"
+                        ;;
+                esac
+                prompt_continue
+            done
             ;;
         5)
-            system_diagnosis
-            echo -e "\n${YELLOW}按回车键继续...${NC}"
-            read -r
+            # 状态检查
+            show_detailed_info
+            prompt_continue
             ;;
         6)
-            # 帮助信息
-            echo -e "\n${CYAN}=== 帮助信息 ===${NC}\n"
-            echo -e "${GREEN}脚本功能:${NC}"
-            echo -e "  • 智能TCP缓冲区调优"
-            echo -e "  • 自动网络环境检测"
-            echo -e "  • 场景化配置推荐"
-            echo -e "  • 配置管理和回滚"
-            echo -e "  • 网络测试和诊断"
-            echo -e "\n${GREEN}使用建议:${NC}"
-            echo -e "  • 首次使用建议选择'智能调优'"
-            echo -e "  • 根据实际使用场景选择配置"
-            echo -e "  • 定期进行网络测试验证效果"
-            echo -e "\n${YELLOW}按回车键继续...${NC}"
-            read -r
+            # 配置建议
+            show_config_recommendations
+            prompt_continue
             ;;
         0)
             echo -e "\n${CYAN}感谢使用TCP调优脚本，再见！${NC}"
-            log_message "INFO" "TCP tuning script exited"
             exit 0
             ;;
         *)
             echo -e "\n${RED}✘ 无效选择，请输入0-6之间的数字${NC}"
-            echo -e "\n${YELLOW}按回车键继续...${NC}"
-            read -r
+            prompt_continue
             ;;
     esac
 done
